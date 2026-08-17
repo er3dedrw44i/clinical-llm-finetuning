@@ -48,7 +48,7 @@ def load_models_and_tokenizer():
         torch_dtype=torch.float32
     ).to(device)
 
-    # Load Fine-Tuned Model
+    # Load Fine-Tuned Model (using newly trained merged weights)
     if os.path.exists(MERGED_DIR):
         tuned_model = AutoModelForCausalLM.from_pretrained(
             MERGED_DIR,
@@ -62,7 +62,7 @@ def load_models_and_tokenizer():
     return tokenizer, base_model, tuned_model, device
 
 
-def generate_response(model, tokenizer, prompt, device):
+def generate_response(model, tokenizer, prompt, is_lora, device):
     formatted = (
         "<|im_start|>system\n"
         "You are an expert Clinical Medicine AI assistant. Provide accurate, evidence-based guidance.<|im_end|>\n"
@@ -76,8 +76,9 @@ def generate_response(model, tokenizer, prompt, device):
         output = model.generate(
             **inputs,
             max_new_tokens=256,
-            temperature=0.2,
-            do_sample=False,
+            temperature=0.3,
+            do_sample=True,
+            repetition_penalty=1.15,
             pad_token_id=tokenizer.eos_token_id
         )
     latency_sec = time.perf_counter() - start_time
@@ -137,13 +138,13 @@ if st.button("🚀 Run Clinical Analysis", type="primary"):
         with col1:
             st.subheader("🤖 Base Foundation Model")
             with st.spinner("Generating base response..."):
-                base_text, base_lat, base_tps, base_n = generate_response(base_model, tokenizer, user_query, device)
+                base_text, base_lat, base_tps, base_n = generate_response(base_model, tokenizer, user_query, is_lora=False, device=device)
             st.write(base_text)
             st.caption(f"⚡ Latency: **{base_lat}s** | Speed: **{base_tps} tok/s** | Tokens: **{base_n}**")
 
         with col2:
             st.subheader("🩺 Fine-Tuned Clinical (LoRA) Model")
             with st.spinner("Generating clinical LoRA response..."):
-                tuned_text, tuned_lat, tuned_tps, tuned_n = generate_response(tuned_model, tokenizer, user_query, device)
+                tuned_text, tuned_lat, tuned_tps, tuned_n = generate_response(tuned_model, tokenizer, user_query, is_lora=True, device=device)
             st.success(tuned_text)
             st.caption(f"⚡ Latency: **{tuned_lat}s** | Speed: **{tuned_tps} tok/s** | Tokens: **{tuned_n}**")
