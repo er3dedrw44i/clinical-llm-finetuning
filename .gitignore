@@ -1,0 +1,18 @@
+# Large model weight checkpoints and tokenizers
+merged_model/
+checkpoints/
+wandb/
+final_adapter/tokenizer.json
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Python & Environment
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+.env
+.venv/
+env/
