@@ -38,7 +38,7 @@ To guarantee both fast local development and single-GPU production scalability, 
 ## 🏗️ The 8-Step Pipeline Modules
 
 ```
-  1. [DATASET]           ──► Curated medical domain dataset (JSONL)
+  1. [DATASET]           ──► 5,000 USMLE clinical reasoning cases (4,000 train / 1,000 test)
   2. [DATA PREPARATION]  ──► ETL cleaning, context-aware deduplication & fixed-seed 80/20 split
   3. [MODEL LOADER]      ──► Hardware-aware routing (MPS FP32 / CUDA 4-bit NF4 BitsAndBytes)
   4. [PEFT / LoRA]       ──► Low-Rank Adapter injection (r=16, alpha=32, target: ALL linear layers)
