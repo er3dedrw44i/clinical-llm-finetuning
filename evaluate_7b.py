@@ -1,7 +1,10 @@
 """
 Step 6B: Production 7B Model Evaluation Engine (CUDA / Cloud).
 Evaluates Base Qwen2.5-7B-Instruct vs. Fine-Tuned QLoRA 7B strictly on `test.jsonl` (1,000 cases).
-Prioritizes Diagnostic Option Match Accuracy (%) using strict regex parsing.
+Features:
+1. Eliminates adapter contamination using `with model.disable_adapter():`.
+2. Strict regex option parsing rejecting false positive article 'A'.
+3. Computes Diagnostic Option Match Accuracy (%) as primary metric.
 """
 
 import os
@@ -21,28 +24,27 @@ TEST_DATA_PATH = "test.jsonl"
 
 
 def extract_predicted_option(text: str) -> str:
-    """
-    Strictly extracts option letter (A, B, C, D, E) from model generation.
-    Rejects accidental substring occurrences (e.g., 'b' in 'Staphylococcus').
-    """
+    """Strictly extracts option letter (A, B, C, D, E). Rejects 'A 68-year-old...'."""
     if not text:
         return "NONE"
-    clean_text = text.strip()
+    clean = text.strip()
     
-    # Pattern 1: Leading option letter (e.g. 'A: ...', 'B. ...', '(C)', 'D - ...')
-    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?(?:\s*[:\.\)\-]|\s+|$)', clean_text)
+    # Pattern 1: Leading option with delimiter (A:, A., A), A -, (A))
+    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?\s*[:\.\)\-]\s*', clean)
     if m1:
         return m1.group(1).upper()
 
-    # Pattern 2: Explicit answer phrasing (e.g. 'The correct answer is B', 'Option C')
-    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)])', clean_text, re.IGNORECASE)
+    # Pattern 2: Explicit answer phrasing (Option A, Answer: A, The correct answer is B)
+    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
     if m2:
         return m2.group(1).upper()
 
-    # Pattern 3: Standalone first token is a valid option letter
-    first_tok = clean_text.split()[0].upper().rstrip('.:,)') if clean_text.split() else ""
-    if first_tok in ["A", "B", "C", "D", "E"]:
-        return first_tok
+    # Pattern 3: Exact standalone 1-token output
+    tokens = clean.split()
+    if len(tokens) == 1:
+        tok = tokens[0].upper().rstrip('.:,)')
+        if tok in ["A", "B", "C", "D", "E"]:
+            return tok
 
     return "NONE"
 
@@ -51,7 +53,7 @@ def get_bnb_4bit_config():
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=torch.float16,  # Native FP16 on Tesla T4
         bnb_4bit_use_double_quant=True
     )
 
@@ -145,13 +147,13 @@ def run_7b_evaluation(num_test_eval=None):
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         device_map="auto" if device == "cuda" else None
     )
     if device != "cuda":
         base_model = base_model.to(device)
 
-    # Attach QLoRA Adapter if available
+    # Attach QLoRA Adapter
     tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
 
     # 1. Primary Metric: Strict Diagnostic Option Match Accuracy
@@ -165,7 +167,14 @@ def run_7b_evaluation(num_test_eval=None):
         gold = sample["output"].strip()
         gold_opt = extract_predicted_option(gold)
 
-        base_resp = generate_response(base_model, tokenizer, inst, inp, device)
+        # Evaluate Base Model (with adapter strictly disabled to prevent contamination)
+        if hasattr(tuned_model, "disable_adapter"):
+            with tuned_model.disable_adapter():
+                base_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
+        else:
+            base_resp = generate_response(base_model, tokenizer, inst, inp, device)
+
+        # Evaluate Fine-Tuned QLoRA Model
         tuned_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
 
         base_pred_opt = extract_predicted_option(base_resp)
@@ -184,10 +193,14 @@ def run_7b_evaluation(num_test_eval=None):
 
     # 2. Secondary Metric: Completion Perplexity
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
-    base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
+    if hasattr(tuned_model, "disable_adapter"):
+        with tuned_model.disable_adapter():
+            base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
+    else:
+        base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
     tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
 
-    # Dynamic Benchmark Report
+    # Report
     print("\n" + "=" * 70)
     print("                     7B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
@@ -195,14 +208,6 @@ def run_7b_evaluation(num_test_eval=None):
     print(f"  -----------------------------------------------------------------------")
     print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if tuned_acc >= base_acc else '-'}{abs(tuned_acc - base_acc):.2f}%")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
-    print("=" * 70)
-
-    if tuned_acc > base_acc or (tuned_acc == base_acc and tuned_ppl < base_ppl):
-        print("🏆 BENCHMARK RESULT: Fine-Tuned QLoRA 7B Model demonstrated higher empirical diagnostic performance.")
-    elif base_acc > tuned_acc:
-        print("🏆 BENCHMARK RESULT: Base 7B Model baseline outperformed fine-tuned model.")
-    else:
-        print("⚖️ BENCHMARK RESULT: Base 7B and QLoRA 7B demonstrated identical diagnostic accuracy.")
     print("=" * 70)
 
 

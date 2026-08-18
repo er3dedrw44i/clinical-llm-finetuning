@@ -1,7 +1,10 @@
 """
 Step 6: Production 0.5B Model Evaluation Engine (Apple Silicon MPS / Local).
 Evaluates Base Qwen2.5-0.5B vs. Fine-Tuned (LoRA) Model strictly on `test.jsonl` (1,000 cases).
-Prioritizes Strict Diagnostic Option Match Accuracy (%) as primary task metric.
+Features:
+1. Eliminates adapter contamination using `with model.disable_adapter():`.
+2. Strict regex option parsing rejecting false positive article 'A'.
+3. Computes Diagnostic Option Match Accuracy (%) as primary metric.
 """
 
 import os
@@ -20,28 +23,27 @@ TEST_DATA_PATH = "test.jsonl"
 
 
 def extract_predicted_option(text: str) -> str:
-    """
-    Strictly extracts option letter (A, B, C, D, E) from model generation.
-    Rejects accidental substring occurrences (e.g., 'b' in 'Staphylococcus').
-    """
+    """Strictly extracts option letter (A, B, C, D, E). Rejects 'A 68-year-old...'."""
     if not text:
         return "NONE"
-    clean_text = text.strip()
+    clean = text.strip()
     
-    # Pattern 1: Leading option letter (e.g. 'A: ...', 'B. ...', '(C)', 'D - ...')
-    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?(?:\s*[:\.\)\-]|\s+|$)', clean_text)
+    # Pattern 1: Leading option with delimiter (A:, A., A), A -, (A))
+    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?\s*[:\.\)\-]\s*', clean)
     if m1:
         return m1.group(1).upper()
 
-    # Pattern 2: Explicit answer phrasing (e.g. 'The correct answer is B', 'Option C')
-    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)])', clean_text, re.IGNORECASE)
+    # Pattern 2: Explicit answer phrasing (Option A, Answer: A, The correct answer is B)
+    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
     if m2:
         return m2.group(1).upper()
 
-    # Pattern 3: Standalone first token is a valid option letter
-    first_tok = clean_text.split()[0].upper().rstrip('.:,)') if clean_text.split() else ""
-    if first_tok in ["A", "B", "C", "D", "E"]:
-        return first_tok
+    # Pattern 3: Exact standalone 1-token output
+    tokens = clean.split()
+    if len(tokens) == 1:
+        tok = tokens[0].upper().rstrip('.:,)')
+        if tok in ["A", "B", "C", "D", "E"]:
+            return tok
 
     return "NONE"
 
@@ -144,7 +146,11 @@ def run_evaluation(num_test_eval=None):
         gold = sample["output"].strip()
         gold_opt = extract_predicted_option(gold)
 
-        base_resp = generate_response(base_model, tokenizer, inst, inp, device)
+        # Evaluate Base Model (with adapter strictly disabled to guarantee zero contamination)
+        with tuned_model.disable_adapter():
+            base_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
+        
+        # Evaluate Fine-Tuned LoRA Model
         tuned_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
 
         base_pred_opt = extract_predicted_option(base_resp)
@@ -163,7 +169,8 @@ def run_evaluation(num_test_eval=None):
 
     # 2. Secondary Metric: Completion Perplexity
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
-    base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
+    with tuned_model.disable_adapter():
+        base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
     tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
 
     # Report
