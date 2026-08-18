@@ -54,10 +54,17 @@ def run_qlora_training():
     print("      🚀 PRODUCTION 4-BIT NF4 QLoRA TRAINING ON 7B FOUNDATION MODEL")
     print("=" * 70)
 
-    # 1. Hardware Verification
+    # 1. Hardware Verification (Fast Fail on Non-CUDA)
     is_cuda = torch.cuda.is_available()
     device = "cuda" if is_cuda else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
     print(f"🖥️ Hardware Accelerator: {device.upper()}")
+
+    if not is_cuda:
+        raise RuntimeError(
+            f"❌ CUDA GPU accelerator required for 4-bit NF4 QLoRA training on {MODEL_NAME}.\n"
+            "BitsAndBytes 4-bit quantization kernels require an NVIDIA GPU (e.g. Tesla T4, A100).\n"
+            "Please run this training pipeline on Google Colab using `qlora_colab.ipynb` or on a CUDA-enabled GPU."
+        )
 
     # 2. Load Tokenizer
     print(f"\n1. Loading Tokenizer: {MODEL_NAME}...")
@@ -67,24 +74,17 @@ def run_qlora_training():
 
     # 3. Load 4-bit Quantized Base Model
     print(f"2. Loading Quantized Model: {MODEL_NAME}...")
-    if is_cuda:
-        bnb_config = get_bnb_4bit_config()
-        print(f"⚡ Applying BitsAndBytes 4-bit NF4 Quantization (Compute Dtype: {bnb_config.bnb_4bit_compute_dtype})...")
-        base_model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME,
-            quantization_config=bnb_config,
-            device_map="auto"
-        )
-        base_model = prepare_model_for_kbit_training(
-            base_model,
-            use_gradient_checkpointing=True
-        )
-    else:
-        raise RuntimeError(
-            f"❌ CUDA GPU accelerator required for 4-bit NF4 QLoRA training on {MODEL_NAME}.\n"
-            "BitsAndBytes 4-bit quantization kernels require an NVIDIA GPU (e.g. Tesla T4, A100).\n"
-            "Please run this training pipeline on Google Colab using `qlora_colab.ipynb` or on a CUDA-enabled GPU."
-        )
+    bnb_config = get_bnb_4bit_config()
+    print(f"⚡ Applying BitsAndBytes 4-bit NF4 Quantization (Compute Dtype: {bnb_config.bnb_4bit_compute_dtype})...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        quantization_config=bnb_config,
+        device_map="auto"
+    )
+    base_model = prepare_model_for_kbit_training(
+        base_model,
+        use_gradient_checkpointing=True
+    )
 
     # 4. Inject LoRA Adapters
     print("\n3. Injecting LoRA Adapters (r=16, alpha=32)...")
