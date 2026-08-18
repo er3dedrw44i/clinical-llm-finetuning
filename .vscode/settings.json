@@ -1,0 +1,6 @@
+{
+  "python.defaultInterpreterPath": "/opt/miniconda3/bin/python3.13",
+  "python.analysis.extraPaths": [
+    "."
+  ]
+}
