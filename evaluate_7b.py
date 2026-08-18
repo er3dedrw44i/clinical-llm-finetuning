@@ -2,10 +2,11 @@
 Step 6B: Production 7B Model Evaluation Engine (CUDA / Cloud).
 Evaluates Base Qwen2.5-7B-Instruct vs. Fine-Tuned QLoRA 7B strictly on `test.jsonl` (1,000 cases).
 Features:
-1. Shared preprocessing via `data_utils.py`.
-2. Eliminates adapter contamination using `with model.disable_adapter():`.
-3. Computes 95% Confidence Intervals & McNemar paired transition matrix.
-4. Automatically exports `results/qlora_7b_evaluation.json` and `results/error_analysis.json`.
+1. Transparent weight detection: checks for `adapter_model.safetensors`.
+2. Shared preprocessing via `data_utils.py`.
+3. Eliminates adapter contamination using `with model.disable_adapter():`.
+4. Computes 95% Confidence Intervals & McNemar paired transition matrix.
+5. Automatically exports `results/qlora_7b_evaluation.json` and `results/error_analysis.json`.
 """
 
 import os
@@ -25,6 +26,7 @@ from data_utils import (
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
+ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_PATH, "adapter_model.safetensors")
 TEST_DATA_PATH = "test.jsonl"
 RESULTS_DIR = "./results"
 
@@ -148,7 +150,16 @@ def run_7b_evaluation(num_test_eval=None):
     if device != "cuda":
         base_model = base_model.to(device)
 
-    tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
+    # Check for actual trained adapter weights
+    has_adapter_weights = os.path.exists(ADAPTER_WEIGHTS_FILE) and os.path.getsize(ADAPTER_WEIGHTS_FILE) > 1000
+    if has_adapter_weights:
+        print(f"✅ Found fine-tuned adapter weights: {ADAPTER_WEIGHTS_FILE}")
+        tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    else:
+        print(f"⚠️ No fine-tuned adapter weights found at {ADAPTER_WEIGHTS_FILE}.")
+        print("  • Evaluating Base 7B Foundation Model baseline.")
+        print("  • To evaluate fine-tuned QLoRA, complete training on Colab (qlora_colab.ipynb) and place weights in final_qlora_7b_adapter/.")
+        tuned_model = base_model
 
     # 1. Primary Metric & Error Analysis
     print("\n--- 🎯 PRIMARY METRIC & PAIRED TRANSITION EVALUATION ---")
@@ -167,7 +178,7 @@ def run_7b_evaluation(num_test_eval=None):
         gold = sample["output"].strip()
         gold_opt = extract_predicted_option(gold)
 
-        if hasattr(tuned_model, "disable_adapter"):
+        if has_adapter_weights and hasattr(tuned_model, "disable_adapter"):
             with tuned_model.disable_adapter():
                 base_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
         else:
@@ -184,7 +195,6 @@ def run_7b_evaluation(num_test_eval=None):
         if base_is_correct: base_matches += 1
         if tuned_is_correct: tuned_matches += 1
 
-        # Track transitions
         if not base_is_correct and tuned_is_correct:
             transitions["wrong_to_correct"] += 1
         elif base_is_correct and tuned_is_correct:
@@ -194,14 +204,13 @@ def run_7b_evaluation(num_test_eval=None):
         else:
             transitions["wrong_to_wrong"] += 1
 
-        # Track by option
         if gold_opt in option_accuracy:
             option_accuracy[gold_opt]["total"] += 1
             if base_is_correct: option_accuracy[gold_opt]["base_correct"] += 1
             if tuned_is_correct: option_accuracy[gold_opt]["tuned_correct"] += 1
 
         if idx <= 5 or idx == len(test_samples):
-            print(f"  [Case {idx:04d}] Gold: {gold_opt} | Base: {base_pred_opt:<4} | QLoRA: {tuned_pred_opt:<4}")
+            print(f"  [Case {idx:04d}] Gold: {gold_opt} | Base: {base_pred_opt:<4} | Model: {tuned_pred_opt:<4}")
 
     base_acc = round((base_matches / len(test_samples)) * 100, 2)
     tuned_acc = round((tuned_matches / len(test_samples)) * 100, 2)
@@ -212,7 +221,7 @@ def run_7b_evaluation(num_test_eval=None):
 
     # 2. Secondary Metric: Completion Perplexity
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
-    if hasattr(tuned_model, "disable_adapter"):
+    if has_adapter_weights and hasattr(tuned_model, "disable_adapter"):
         with tuned_model.disable_adapter():
             base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
     else:
@@ -223,9 +232,10 @@ def run_7b_evaluation(num_test_eval=None):
     os.makedirs(RESULTS_DIR, exist_ok=True)
     eval_artifact = {
         "model_evaluated": MODEL_NAME,
-        "adapter_path": ADAPTER_PATH,
+        "adapter_path": ADAPTER_PATH if has_adapter_weights else "None (Base Model Baseline)",
+        "adapter_weights_detected": has_adapter_weights,
         "eval_dataset": f"test.jsonl ({len(test_samples)} cases)",
-        "quantization": "BitsAndBytes 4-bit NF4",
+        "quantization": "BitsAndBytes 4-bit NF4" if device == "cuda" else "FP16",
         "primary_metric": "Strict Diagnostic Option Match Accuracy (%)",
         "base_7b_accuracy_pct": base_acc,
         "base_7b_95_ci_pct": base_ci,
@@ -242,9 +252,9 @@ def run_7b_evaluation(num_test_eval=None):
 
     error_artifact = {
         "total_evaluated": len(test_samples),
+        "adapter_weights_evaluated": has_adapter_weights,
         "paired_transitions": transitions,
-        "breakdown_by_option": option_accuracy,
-        "key_finding": f"QLoRA resolved {transitions['wrong_to_correct']} baseline errors while preserving {transitions['correct_to_correct']} correct baseline diagnoses."
+        "breakdown_by_option": option_accuracy
     }
     with open(os.path.join(RESULTS_DIR, "error_analysis.json"), "w", encoding="utf-8") as f:
         json.dump(error_artifact, f, indent=2)
@@ -252,13 +262,10 @@ def run_7b_evaluation(num_test_eval=None):
     print("\n" + "=" * 70)
     print("                     7B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
-    print(f"  Metric                     Base 7B           QLoRA 7B           Difference")
+    print(f"  Metric                     Base 7B           Model Evaluated    Difference")
     print(f"  -----------------------------------------------------------------------")
     print(f"  Diagnostic Accuracy (%)    {base_acc:<7}% [{base_ci[0]}-{base_ci[1]}]  {tuned_acc:<7}% [{tuned_ci[0]}-{tuned_ci[1]}]  {'+' if diff_pp >= 0 else ''}{diff_pp} pp")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
-    print("=" * 70)
-    print(f"  📊 Paired Error Transitions: Wrong➔Correct: {transitions['wrong_to_correct']} | Correct➔Correct: {transitions['correct_to_correct']} | Correct➔Wrong: {transitions['correct_to_wrong']} | Wrong➔Wrong: {transitions['wrong_to_wrong']}")
-    print(f"  💾 Results automatically saved to: results/qlora_7b_evaluation.json and results/error_analysis.json")
     print("=" * 70)
 
 

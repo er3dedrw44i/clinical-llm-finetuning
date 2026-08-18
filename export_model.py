@@ -11,6 +11,7 @@ from peft import PeftModel
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
+ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_PATH, "adapter_model.safetensors")
 MERGED_OUTPUT_DIR = "./merged_model_7b"
 
 
@@ -19,14 +20,19 @@ def export_merged_7b_model():
     print("      🚀 STEP 8: STANDALONE 7B WEIGHT FUSION & EXPORT ENGINE")
     print("=" * 70)
 
-    if not os.path.exists(ADAPTER_PATH):
-        raise FileNotFoundError(f"Trained adapter not found at {ADAPTER_PATH}. Run qlora_train.py first.")
+    if not (os.path.exists(ADAPTER_WEIGHTS_FILE) and os.path.getsize(ADAPTER_WEIGHTS_FILE) > 1000):
+        raise FileNotFoundError(
+            f"❌ Trained adapter weights not found at {ADAPTER_WEIGHTS_FILE}.\n"
+            "Please complete 7B QLoRA training in Google Colab (qlora_colab.ipynb) or on an NVIDIA GPU, "
+            "and place `adapter_model.safetensors` in `final_qlora_7b_adapter/` before exporting merged weights."
+        )
 
     print(f"\n1. Loading Base 7B Model in FP16 for clean weight fusion...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="right")
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
         device_map="cpu"
     )
 

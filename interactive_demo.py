@@ -1,5 +1,5 @@
 """
-Interactive Terminal Demo for 7B QLoRA Clinical AI Model.
+Interactive Terminal Demo for 7B Clinical AI Model.
 """
 
 import os
@@ -10,11 +10,12 @@ from data_utils import extract_predicted_option
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
+ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_PATH, "adapter_model.safetensors")
 
 
 def run_interactive_demo():
     print("=" * 70)
-    print("      🩺 7B QLoRA CLINICAL DECISION SUPPORT INTERACTIVE TERMINAL")
+    print("      🩺 7B CLINICAL DECISION SUPPORT INTERACTIVE TERMINAL")
     print("=" * 70)
 
     is_cuda = torch.cuda.is_available()
@@ -37,16 +38,23 @@ def run_interactive_demo():
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        torch_dtype=compute_dtype if is_cuda else torch.float32,
+        torch_dtype=compute_dtype if is_cuda else torch.float16,
+        low_cpu_mem_usage=True,
         device_map="auto" if is_cuda else None
     )
     if not is_cuda:
         base_model = base_model.to(device)
 
-    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
-    model.eval()
+    has_weights = os.path.exists(ADAPTER_WEIGHTS_FILE) and os.path.getsize(ADAPTER_WEIGHTS_FILE) > 1000
+    if has_weights:
+        print(f"✅ Loading fine-tuned QLoRA adapter from {ADAPTER_WEIGHTS_FILE}...")
+        model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    else:
+        print("💡 No fine-tuned adapter weights detected in final_qlora_7b_adapter/. Running Base 7B Model.")
+        model = base_model
 
-    print("✅ Model loaded! Enter your USMLE clinical case vignette (or 'exit' to quit):\n")
+    model.eval()
+    print("✅ Ready! Enter your USMLE clinical case vignette (or 'exit' to quit):\n")
 
     while True:
         try:

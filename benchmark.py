@@ -8,13 +8,14 @@ Measures:
 """
 
 import time
+import os
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
-import os
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
+ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_PATH, "adapter_model.safetensors")
 
 
 def benchmark_7b_inference(num_warmup=2, num_runs=5):
@@ -35,18 +36,27 @@ def benchmark_7b_inference(num_warmup=2, num_runs=5):
         bnb_4bit_use_double_quant=True
     ) if is_cuda else None
 
-    print(f"📥 Loading {MODEL_NAME} in 4-bit NF4...")
+    print(f"📥 Loading {MODEL_NAME}...")
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        torch_dtype=compute_dtype if is_cuda else torch.float32,
+        torch_dtype=compute_dtype if is_cuda else torch.float16,
+        low_cpu_mem_usage=True,
         device_map="auto" if is_cuda else None
     )
     if not is_cuda:
         base_model = base_model.to(device)
 
-    tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
-    tuned_model.eval()
+    # Check for real adapter weights
+    has_weights = os.path.exists(ADAPTER_WEIGHTS_FILE) and os.path.getsize(ADAPTER_WEIGHTS_FILE) > 1000
+    if has_weights:
+        print(f"✅ Loading fine-tuned adapter weights from {ADAPTER_WEIGHTS_FILE}...")
+        model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    else:
+        print("💡 No fine-tuned adapter weights detected; benchmarking Base 7B Model.")
+        model = base_model
+
+    model.eval()
 
     prompt = (
         "<|im_start|>system\n"
@@ -60,7 +70,7 @@ def benchmark_7b_inference(num_warmup=2, num_runs=5):
     print("⚡ Warming up GPU kernels...")
     for _ in range(num_warmup):
         with torch.no_grad():
-            _ = tuned_model.generate(**inputs, max_new_tokens=10, do_sample=False)
+            _ = model.generate(**inputs, max_new_tokens=10, do_sample=False)
         if is_cuda: torch.cuda.synchronize()
 
     # Benchmark First-Token Generation Latency
@@ -70,7 +80,7 @@ def benchmark_7b_inference(num_warmup=2, num_runs=5):
         if is_cuda: torch.cuda.synchronize()
         t0 = time.perf_counter()
         with torch.no_grad():
-            _ = tuned_model.generate(**inputs, max_new_tokens=1, do_sample=False)
+            _ = model.generate(**inputs, max_new_tokens=1, do_sample=False)
         if is_cuda: torch.cuda.synchronize()
         latencies.append((time.perf_counter() - t0) * 1000)
 
@@ -81,7 +91,7 @@ def benchmark_7b_inference(num_warmup=2, num_runs=5):
     if is_cuda: torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad():
-        out = tuned_model.generate(**inputs, max_new_tokens=64, do_sample=False)
+        out = model.generate(**inputs, max_new_tokens=64, do_sample=False)
     if is_cuda: torch.cuda.synchronize()
     total_time = time.perf_counter() - t0
     gen_tokens = out.shape[1] - inputs.input_ids.shape[1]
@@ -94,7 +104,7 @@ def benchmark_7b_inference(num_warmup=2, num_runs=5):
     print("                     7B INFERENCE BENCHMARK REPORT")
     print("=" * 70)
     print(f"  • Model:                        {MODEL_NAME}")
-    print(f"  • Quantization:                 4-Bit NormalFloat4 (NF4)")
+    print(f"  • Fine-Tuned Adapter Loaded:    {has_weights}")
     print(f"  • Hardware:                     {device.upper()}")
     print(f"  • First-Token Latency:          {mean_first_token_ms} ms")
     print(f"  • Generation Throughput:        {throughput_tps} tokens/second")

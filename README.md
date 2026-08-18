@@ -19,7 +19,7 @@ The pipeline compresses base model weights by $\approx 72\%$ ($\approx 16\text{ 
 
 ## 🔬 Benchmark Results & Statistical Evaluation (1,000 Held-Out Cases)
 
-Evaluated strictly on **1,000 unseen test cases (`test.jsonl`)** with **0% exact-string SHA-256 data leakage** and zero base model adapter contamination (`with model.disable_adapter():`):
+> **Execution Context:** The benchmark metrics below reflect the completed 4-bit NF4 QLoRA training run on an NVIDIA Tesla T4 GPU via [`qlora_colab.ipynb`](qlora_colab.ipynb). Evaluated strictly on **1,000 unseen test cases (`test.jsonl`)** with **0% exact-string SHA-256 data leakage** and zero base model adapter contamination (`with model.disable_adapter():`):
 
 ```text
 ========================================================================================
