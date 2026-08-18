@@ -1,10 +1,14 @@
 """
-Step 5: Optimized Fast SFT Training with Completion-Only Loss Masking (-100).
-Optimized for Apple Silicon Metal (MPS) with efficient batching (max_length=256, batch_size=4).
-Completes 80-case baseline training in under 45 seconds!
+Step 5: Experiment A Baseline SFT Training on Apple Silicon M5 GPU.
+Features:
+1. Completion-Only Loss Masking (-100 on prompt tokens).
+2. Safe token formatting preserving 100% of diagnostic completion tokens.
+3. Loads strictly from persistent `train.jsonl` (4,000 cases).
+4. Peft LoRA Adapters (r=16, alpha=32).
 """
 
 import os
+import time
 import torch
 from transformers import (
     AutoTokenizer,
@@ -15,25 +19,14 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import Dataset
-
-try:
-    import wandb
-    WANDB_AVAILABLE = True
-except ImportError:
-    WANDB_AVAILABLE = False
-
-from prepare_dataset import prepare_data
+from prepare_dataset import load_split
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-OUTPUT_DIR = "./final_adapter"
-WANDB_PROJECT = "clinical-llm-finetuning"
+ADAPTER_PATH = "./final_adapter"
+TRAIN_DATA_PATH = "train.jsonl"
 
 
-def format_completion_only_tokens(samples, tokenizer, max_length=256):
-    """
-    Encodes (Prompt + Completion) with max_length=256 for fast MPS execution.
-    Masks all prompt tokens with -100 so loss is computed strictly on completions.
-    """
+def format_completion_only_tokens(samples, tokenizer, max_length=512):
     input_ids_list, attention_mask_list, labels_list = [], [], []
 
     for item in samples:
@@ -48,16 +41,18 @@ def format_completion_only_tokens(samples, tokenizer, max_length=256):
             f"<|im_start|>user\n{instruction}{context_str}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
-        full_str = prompt_str + f"{output}<|im_end|>"
+        output_str = f"{output}<|im_end|>"
 
         prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
-        full_ids = tokenizer.encode(full_str, add_special_tokens=False)
+        output_ids = tokenizer.encode(output_str, add_special_tokens=False)
 
-        if len(full_ids) > max_length:
-            full_ids = full_ids[:max_length]
+        # Protect 100% of completion loss signal by truncating prompt from left if needed
+        if len(prompt_ids) + len(output_ids) > max_length:
+            max_prompt_len = max(10, max_length - len(output_ids))
+            prompt_ids = prompt_ids[-max_prompt_len:]
 
-        prompt_len = min(len(prompt_ids), len(full_ids))
-        labels = [-100] * prompt_len + full_ids[prompt_len:]
+        full_ids = prompt_ids + output_ids
+        labels = [-100] * len(prompt_ids) + output_ids
 
         input_ids_list.append(full_ids)
         attention_mask_list.append([1] * len(full_ids))
@@ -72,29 +67,14 @@ def format_completion_only_tokens(samples, tokenizer, max_length=256):
 
 def run_training():
     print("=" * 70)
-    print("   🚀 STEP 5: OPTIMIZED FAST SFT TRAINING (80 USMLE CASES)")
+    print("      🚀 STEP 5: EXPERIMENT A SFT TRAINING ON APPLE SILICON GPU (MPS)")
     print("=" * 70)
 
     device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🍎 Active Device: {device}")
+    print(f"🍎 Active Hardware Accelerator: {device.upper()}")
 
-    # Initialize W&B (Offline Fallback)
-    report_to = "none"
-    if WANDB_AVAILABLE:
-        try:
-            if "WANDB_API_KEY" not in os.environ:
-                os.environ["WANDB_MODE"] = "offline"
-            wandb.init(
-                project=WANDB_PROJECT,
-                name="qwen0.5b-80cases-fast",
-                config={"model": MODEL_NAME, "lora_r": 16, "lora_alpha": 32, "lr": 2e-4, "device": device}
-            )
-            report_to = "wandb"
-        except Exception:
-            report_to = "none"
-
-    # 1. Load Tokenizer & Base Model
-    print("\n1. Loading Tokenizer & Model...")
+    # 1. Load Tokenizer & Model
+    print(f"\n1. Loading Base Model: {MODEL_NAME}...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="right")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -105,7 +85,7 @@ def run_training():
     ).to(device)
 
     # 2. Inject LoRA Adapters
-    print("2. Injecting LoRA Adapters (r=16, alpha=32)...")
+    print("\n2. Injecting LoRA Adapters (r=16, alpha=32)...")
     peft_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=16,
@@ -117,16 +97,13 @@ def run_training():
     lora_model = get_peft_model(base_model, peft_config)
     lora_model.print_trainable_parameters()
 
-    # 3. Format Dataset (max_length=256 for fast execution)
-    print("\n3. Formatting Train Cases from persistent train.jsonl...")
-    from prepare_dataset import load_split
-    train_data = load_split("train.jsonl")
-    eval_data = load_split("test.jsonl")
-    train_dataset = format_completion_only_tokens(train_data, tokenizer, max_length=256)
-    eval_dataset = format_completion_only_tokens(eval_data, tokenizer, max_length=256)
-    print(f"  • Train Samples: {len(train_dataset)}, Held-Out Test Samples: {len(eval_dataset)}")
+    # 3. Load Persistent Training Split ONLY
+    print(f"\n3. Formatting Training Cases from {TRAIN_DATA_PATH}...")
+    train_data = load_split(TRAIN_DATA_PATH)
+    train_dataset = format_completion_only_tokens(train_data, tokenizer, max_length=512)
+    print(f"  • Active Training Cases: {len(train_dataset)} (100% completion preservation guaranteed)")
 
-    # 4. Fast Dynamic Padding Collator
+    # 4. Collator & Training Arguments
     data_collator = DataCollatorForSeq2Seq(
         tokenizer=tokenizer,
         model=lora_model,
@@ -135,23 +112,20 @@ def run_training():
         label_pad_token_id=-100
     )
 
-    # 5. Fast Batching Arguments (batch_size=4, 2 epochs = 40 total steps)
     training_args = TrainingArguments(
-        output_dir="./checkpoints",
-        num_train_epochs=2,
+        output_dir="./lora_checkpoints",
+        num_train_epochs=1,
         per_device_train_batch_size=4,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=4,
         learning_rate=2e-4,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
-        logging_steps=5,
+        warmup_steps=25,
+        logging_steps=10,
         save_strategy="no",
-        report_to=report_to,
+        report_to="none",
         remove_unused_columns=False
     )
 
-    # 6. Execute Fast Training
-    print("\n4. 🚀 Starting Fast Training Loop on Apple Silicon (40 steps)...")
     trainer = Trainer(
         model=lora_model,
         train_dataset=train_dataset,
@@ -159,20 +133,19 @@ def run_training():
         args=training_args
     )
 
+    print("\n4. 🚀 Starting Experiment A Baseline Training Loop...")
+    start_time = time.time()
     train_result = trainer.train()
+    elapsed = time.time() - start_time
 
-    # 7. Save Adapter
-    print(f"\n5. 💾 Saving trained LoRA adapter to: {OUTPUT_DIR}")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    trainer.model.save_pretrained(OUTPUT_DIR)
-    tokenizer.save_pretrained(OUTPUT_DIR)
-
-    if report_to == "wandb" and WANDB_AVAILABLE:
-        wandb.finish()
+    # 5. Save Adapter
+    os.makedirs(ADAPTER_PATH, exist_ok=True)
+    trainer.model.save_pretrained(ADAPTER_PATH)
+    tokenizer.save_pretrained(ADAPTER_PATH)
 
     print("=" * 70)
-    print(f"🎉 Training Complete! Final Train Loss: {train_result.metrics.get('train_loss', 0.0):.4f}")
-    print(f"✅ Adapter saved in: {OUTPUT_DIR}")
+    print(f"🎉 Training Complete in {elapsed:.2f}s! Final Loss: {train_result.metrics.get('train_loss', 0.0):.4f}")
+    print(f"💾 Trained LoRA Adapter Saved to: {ADAPTER_PATH}")
     print("=" * 70)
 
 

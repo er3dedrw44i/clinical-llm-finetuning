@@ -1,5 +1,5 @@
 """
-Production 4-Bit NF4 QLoRA Training Engine (NVIDIA CUDA).
+Production 4-Bit NF4 QLoRA Training Engine (NVIDIA CUDA / Cloud).
 Configured for reproducible single-GPU training on 4,000 USMLE training cases.
 """
 
@@ -28,17 +28,26 @@ TRAIN_DATA_PATH = "train.jsonl"
 
 
 def get_bnb_4bit_config():
-    """Information-theoretically optimal 4-bit NF4 Quantization."""
+    """Hardware-aware 4-bit NormalFloat4 (NF4) Quantization."""
+    # Native FP16 on Tesla T4 (Turing CC 7.5); BF16 on Ampere/Hopper (CC 8.0+)
+    compute_dtype = (
+        torch.bfloat16
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=compute_dtype,
         bnb_4bit_use_double_quant=True
     )
 
 
-def format_completion_only_tokens(samples, tokenizer, max_length=256):
-    """Masks prompt tokens with -100 so loss is computed strictly on clinical responses."""
+def format_completion_only_tokens(samples, tokenizer, max_length=512):
+    """
+    Masks prompt tokens with -100 while guaranteeing 100% completion token preservation.
+    If full sequence exceeds max_length, truncates prompt from left to protect answer loss.
+    """
     input_ids_list, attention_mask_list, labels_list = [], [], []
 
     for item in samples:
@@ -53,16 +62,18 @@ def format_completion_only_tokens(samples, tokenizer, max_length=256):
             f"<|im_start|>user\n{instruction}{context_str}<|im_end|>\n"
             "<|im_start|>assistant\n"
         )
-        full_str = prompt_str + f"{output}<|im_end|>"
+        output_str = f"{output}<|im_end|>"
 
         prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
-        full_ids = tokenizer.encode(full_str, add_special_tokens=False)
+        output_ids = tokenizer.encode(output_str, add_special_tokens=False)
 
-        if len(full_ids) > max_length:
-            full_ids = full_ids[:max_length]
+        # Truncate prompt from left if needed to protect 100% of the output completion
+        if len(prompt_ids) + len(output_ids) > max_length:
+            max_prompt_len = max(10, max_length - len(output_ids))
+            prompt_ids = prompt_ids[-max_prompt_len:]
 
-        prompt_len = min(len(prompt_ids), len(full_ids))
-        labels = [-100] * prompt_len + full_ids[prompt_len:]
+        full_ids = prompt_ids + output_ids
+        labels = [-100] * len(prompt_ids) + output_ids
 
         input_ids_list.append(full_ids)
         attention_mask_list.append([1] * len(full_ids))
@@ -95,7 +106,7 @@ def run_qlora_training():
     print(f"2. Loading Quantized Model: {MODEL_NAME}...")
     if is_cuda:
         bnb_config = get_bnb_4bit_config()
-        print("⚡ Applying BitsAndBytes 4-bit NF4 Quantization + Double Quant...")
+        print(f"⚡ Applying BitsAndBytes 4-bit NF4 Quantization (Compute Dtype: {bnb_config.bnb_4bit_compute_dtype})...")
         base_model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             quantization_config=bnb_config,
@@ -126,11 +137,11 @@ def run_qlora_training():
     qlora_model = get_peft_model(base_model, peft_config)
     qlora_model.print_trainable_parameters()
 
-    # 5. Load Persistent train.jsonl Dataset ONLY (Zero test set mixing)
+    # 5. Load Persistent train.jsonl Dataset ONLY
     print(f"\n4. Loading Training Data strictly from {TRAIN_DATA_PATH}...")
     train_data = load_split(TRAIN_DATA_PATH)
-    train_dataset = format_completion_only_tokens(train_data, tokenizer, max_length=256)
-    print(f"  • Training Dataset Size: {len(train_dataset)} cases")
+    train_dataset = format_completion_only_tokens(train_data, tokenizer, max_length=512)
+    print(f"  • Training Dataset Size: {len(train_dataset)} cases (100% completion coverage guaranteed)")
 
     # 6. Dynamic Padding Collator
     data_collator = DataCollatorForSeq2Seq(
@@ -161,7 +172,10 @@ def run_qlora_training():
         remove_unused_columns=False
     )
 
-    # 8. Train
+    # 8. Reset Peak Memory Stats & Train
+    if is_cuda:
+        torch.cuda.reset_peak_memory_stats()
+
     print("\n5. 🚀 Starting 4-Bit QLoRA SFT Training Loop (250 total optimizer steps)...")
     trainer = Trainer(
         model=qlora_model,
@@ -172,16 +186,16 @@ def run_qlora_training():
 
     train_result = trainer.train()
 
-    # 9. Save QLoRA Adapter Checkpoint
+    # 9. Measure Clean Peak VRAM & Save Checkpoint
+    peak_vram = torch.cuda.max_memory_allocated() / 1e9 if is_cuda else 0.0
     print(f"\n6. 💾 Saving trained QLoRA adapter to: {OUTPUT_DIR}")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     trainer.model.save_pretrained(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
 
-    peak_vram = torch.cuda.max_memory_allocated() / 1e9 if is_cuda else 0.0
     print("=" * 70)
     print(f"🎉 QLoRA Training Complete! Final Train Loss: {train_result.metrics.get('train_loss', 0.0):.4f}")
-    print(f"📊 Peak VRAM Consumed: {peak_vram:.2f} GB on {device.upper()}")
+    print(f"📊 Observed Peak Training VRAM: {peak_vram:.2f} GB on {device.upper()} (Measured via reset_peak_memory_stats())")
     print(f"✅ Production Adapter Saved to: {OUTPUT_DIR}")
     print("=" * 70)
 
