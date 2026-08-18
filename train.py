@@ -118,11 +118,13 @@ def run_training():
     lora_model.print_trainable_parameters()
 
     # 3. Format Dataset (max_length=256 for fast execution)
-    print("\n3. Formatting 80 Train Cases with Completion-Only Masking...")
-    data_splits = prepare_data("medical_domain_dataset.jsonl", test_ratio=0.20, seed=42)
-    train_dataset = format_completion_only_tokens(data_splits["train"], tokenizer, max_length=256)
-    eval_dataset = format_completion_only_tokens(data_splits["test"], tokenizer, max_length=256)
-    print(f"  • Train Samples: {len(train_dataset)}, Test Samples: {len(eval_dataset)}")
+    print("\n3. Formatting Train Cases from persistent train.jsonl...")
+    from prepare_dataset import load_split
+    train_data = load_split("train.jsonl")
+    eval_data = load_split("test.jsonl")
+    train_dataset = format_completion_only_tokens(train_data, tokenizer, max_length=256)
+    eval_dataset = format_completion_only_tokens(eval_data, tokenizer, max_length=256)
+    print(f"  • Train Samples: {len(train_dataset)}, Held-Out Test Samples: {len(eval_dataset)}")
 
     # 4. Fast Dynamic Padding Collator
     data_collator = DataCollatorForSeq2Seq(

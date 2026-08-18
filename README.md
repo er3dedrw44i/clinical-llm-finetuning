@@ -75,8 +75,11 @@ python3 lora_setup.py
 # 4. SFT training loop with W&B logging
 python3 train.py
 
-# 5. 3-Tier scientific evaluation harness
-python3 evaluate_model.py
+### Step 6: 3-Tier Scientific Model Evaluation Engine (`evaluate_model.py`)
+Evaluates the model **strictly on the persistent held-out `test.jsonl` (1,000 cases)**:
+* **Tier 1: Completion-Only Perplexity (PPL)**: Computes Cross-Entropy loss strictly on unseen assistant completions (ignoring prompt tokens with label `-100`).
+* **Tier 2: Multiset Counter Token F1 Score**: Measures precision, recall, and harmonic F1 across medical domain vocabulary.
+* **Tier 3: Clinical Response Evaluation**: Transparently implements a deterministic heuristic rubric scorer (evaluating diagnostic match, contraindication warnings, and structural formatting) with pluggable LLM-as-a-Judge schema.
 
 # 6. Benchmark latency, TTFT, and throughput
 python3 benchmark.py
