@@ -2,52 +2,30 @@
 Step 6B: Production 7B Model Evaluation Engine (CUDA / Cloud).
 Evaluates Base Qwen2.5-7B-Instruct vs. Fine-Tuned QLoRA 7B strictly on `test.jsonl` (1,000 cases).
 Features:
-1. Exact same safe tokenization and prompt truncation policy as training.
+1. Shared preprocessing via `data_utils.py`.
 2. Eliminates adapter contamination using `with model.disable_adapter():`.
-3. Strict regex option parsing rejecting false positive article 'A'.
-4. Primary metric: Diagnostic Option Match Accuracy (%) with difference in percentage points (pp).
+3. Computes 95% Confidence Intervals & McNemar paired transition matrix.
+4. Automatically exports `results/qlora_7b_evaluation.json` and `results/error_analysis.json`.
 """
 
 import os
-import re
-import json
 import math
-from collections import Counter
+import json
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
-from prepare_dataset import load_split
+from data_utils import (
+    load_split,
+    extract_predicted_option,
+    format_single_example_tokens,
+    DEFAULT_MAX_LENGTH
+)
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
 TEST_DATA_PATH = "test.jsonl"
-
-
-def extract_predicted_option(text: str) -> str:
-    """Strictly extracts option letter (A, B, C, D, E). Rejects 'A 68-year-old...'."""
-    if not text:
-        return "NONE"
-    clean = text.strip()
-    
-    # Pattern 1: Leading option with delimiter (A:, A., A), A -, (A))
-    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?\s*[:\.\)\-]\s*', clean)
-    if m1:
-        return m1.group(1).upper()
-
-    # Pattern 2: Explicit answer phrasing (Option A, Answer: A, The correct answer is B)
-    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
-    if m2:
-        return m2.group(1).upper()
-
-    # Pattern 3: Exact standalone 1-token output
-    tokens = clean.split()
-    if len(tokens) == 1:
-        tok = tokens[0].upper().rstrip('.:,)')
-        if tok in ["A", "B", "C", "D", "E"]:
-            return tok
-
-    return "NONE"
+RESULTS_DIR = "./results"
 
 
 def get_bnb_4bit_config():
@@ -64,24 +42,7 @@ def get_bnb_4bit_config():
     )
 
 
-def format_eval_tokens_safely(prompt_str, output_str, tokenizer, max_length=512):
-    prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
-    output_ids = tokenizer.encode(output_str + "<|im_end|>", add_special_tokens=False)
-
-    # Protect output_ids > max_length edge case
-    if len(output_ids) >= max_length:
-        output_ids = output_ids[:max_length - 1]
-
-    if len(prompt_ids) + len(output_ids) > max_length:
-        max_prompt_len = max(1, max_length - len(output_ids))
-        prompt_ids = prompt_ids[-max_prompt_len:]
-
-    full_ids = prompt_ids + output_ids
-    labels = [-100] * len(prompt_ids) + output_ids
-    return full_ids, labels, len(prompt_ids)
-
-
-def compute_completion_perplexity(model, tokenizer, test_samples, device, max_length=512):
+def compute_completion_perplexity(model, tokenizer, test_samples, device, max_length=DEFAULT_MAX_LENGTH):
     model.eval()
     losses = []
     
@@ -98,7 +59,9 @@ def compute_completion_perplexity(model, tokenizer, test_samples, device, max_le
                 f"<|im_start|>user\n{instruction}{context_str}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
-            full_ids, labels, prompt_len = format_eval_tokens_safely(prompt_str, output, tokenizer, max_length=max_length)
+            full_ids, labels, prompt_len = format_single_example_tokens(
+                prompt_str, output, tokenizer, max_length=max_length
+            )
 
             if len(full_ids) <= prompt_len:
                 continue
@@ -145,6 +108,18 @@ def generate_response(model, tokenizer, instruction, input_text, device):
     return tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 
+def calculate_ci_95(correct: int, total: int) -> Tuple[float, float]:
+    """Computes Wilson 95% Confidence Interval for binomial accuracy."""
+    if total == 0:
+        return (0.0, 0.0)
+    p = correct / total
+    z = 1.96
+    denominator = 1 + (z**2) / total
+    center = (p + (z**2) / (2 * total)) / denominator
+    spread = z * math.sqrt((p * (1 - p) + (z**2) / (4 * total)) / total) / denominator
+    return (round(max(0.0, center - spread) * 100, 2), round(min(1.0, center + spread) * 100, 2))
+
+
 def run_7b_evaluation(num_test_eval=None):
     print("=" * 70)
     print("      🚀 STEP 6B: 7B BASE VS. QLORA EVALUATION ON HELD-OUT TEST SET")
@@ -174,10 +149,16 @@ def run_7b_evaluation(num_test_eval=None):
 
     tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
 
-    # 1. Primary Metric: Strict Diagnostic Option Match Accuracy
-    print("\n--- 🎯 PRIMARY METRIC: STRICT DIAGNOSTIC OPTION MATCH ACCURACY (%) ---")
-    base_matches = 0
-    tuned_matches = 0
+    # 1. Primary Metric & Error Analysis
+    print("\n--- 🎯 PRIMARY METRIC & PAIRED TRANSITION EVALUATION ---")
+    base_matches, tuned_matches = 0, 0
+    transitions = {
+        "wrong_to_correct": 0,
+        "correct_to_correct": 0,
+        "correct_to_wrong": 0,
+        "wrong_to_wrong": 0
+    }
+    option_accuracy = {opt: {"base_correct": 0, "tuned_correct": 0, "total": 0} for opt in ["A", "B", "C", "D", "E"]}
 
     for idx, sample in enumerate(test_samples, 1):
         inst = sample["instruction"]
@@ -196,35 +177,87 @@ def run_7b_evaluation(num_test_eval=None):
         base_pred_opt = extract_predicted_option(base_resp)
         tuned_pred_opt = extract_predicted_option(tuned_resp)
 
-        if base_pred_opt != "NONE" and base_pred_opt == gold_opt:
-            base_matches += 1
-        if tuned_pred_opt != "NONE" and tuned_pred_opt == gold_opt:
-            tuned_matches += 1
+        base_is_correct = (base_pred_opt != "NONE" and base_pred_opt == gold_opt)
+        tuned_is_correct = (tuned_pred_opt != "NONE" and tuned_pred_opt == gold_opt)
+
+        if base_is_correct: base_matches += 1
+        if tuned_is_correct: tuned_matches += 1
+
+        # Track transitions
+        if not base_is_correct and tuned_is_correct:
+            transitions["wrong_to_correct"] += 1
+        elif base_is_correct and tuned_is_correct:
+            transitions["correct_to_correct"] += 1
+        elif base_is_correct and not tuned_is_correct:
+            transitions["correct_to_wrong"] += 1
+        else:
+            transitions["wrong_to_wrong"] += 1
+
+        # Track by option
+        if gold_opt in option_accuracy:
+            option_accuracy[gold_opt]["total"] += 1
+            if base_is_correct: option_accuracy[gold_opt]["base_correct"] += 1
+            if tuned_is_correct: option_accuracy[gold_opt]["tuned_correct"] += 1
 
         if idx <= 5 or idx == len(test_samples):
-            print(f"  [Case {idx:04d}] Gold: {gold_opt} | Base Pred: {base_pred_opt:<4} | QLoRA Pred: {tuned_pred_opt:<4}")
+            print(f"  [Case {idx:04d}] Gold: {gold_opt} | Base: {base_pred_opt:<4} | QLoRA: {tuned_pred_opt:<4}")
 
     base_acc = round((base_matches / len(test_samples)) * 100, 2)
     tuned_acc = round((tuned_matches / len(test_samples)) * 100, 2)
     diff_pp = round(tuned_acc - base_acc, 2)
 
-    # 2. Secondary Metric: Completion Perplexity (Exact Training Alignment)
+    base_ci = calculate_ci_95(base_matches, len(test_samples))
+    tuned_ci = calculate_ci_95(tuned_matches, len(test_samples))
+
+    # 2. Secondary Metric: Completion Perplexity
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
     if hasattr(tuned_model, "disable_adapter"):
         with tuned_model.disable_adapter():
-            base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
+            base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
     else:
-        base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device, max_length=512)
-    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
+        base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
+    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
 
-    # Report with percentage points (pp)
+    # Automatically save result artifacts
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    eval_artifact = {
+        "model_evaluated": MODEL_NAME,
+        "adapter_path": ADAPTER_PATH,
+        "eval_dataset": f"test.jsonl ({len(test_samples)} cases)",
+        "quantization": "BitsAndBytes 4-bit NF4",
+        "primary_metric": "Strict Diagnostic Option Match Accuracy (%)",
+        "base_7b_accuracy_pct": base_acc,
+        "base_7b_95_ci_pct": base_ci,
+        "qlora_7b_accuracy_pct": tuned_acc,
+        "qlora_7b_95_ci_pct": tuned_ci,
+        "accuracy_gain_percentage_points_pp": diff_pp,
+        "base_7b_completion_ppl": base_ppl,
+        "qlora_7b_completion_ppl": tuned_ppl,
+        "base_contamination_safeguard": "with model.disable_adapter(): context manager",
+        "tokenization_policy": f"Shared data_utils.py formatting (max_length={DEFAULT_MAX_LENGTH})"
+    }
+    with open(os.path.join(RESULTS_DIR, "qlora_7b_evaluation.json"), "w", encoding="utf-8") as f:
+        json.dump(eval_artifact, f, indent=2)
+
+    error_artifact = {
+        "total_evaluated": len(test_samples),
+        "paired_transitions": transitions,
+        "breakdown_by_option": option_accuracy,
+        "key_finding": f"QLoRA resolved {transitions['wrong_to_correct']} baseline errors while preserving {transitions['correct_to_correct']} correct baseline diagnoses."
+    }
+    with open(os.path.join(RESULTS_DIR, "error_analysis.json"), "w", encoding="utf-8") as f:
+        json.dump(error_artifact, f, indent=2)
+
     print("\n" + "=" * 70)
     print("                     7B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
     print(f"  Metric                     Base 7B           QLoRA 7B           Difference")
     print(f"  -----------------------------------------------------------------------")
-    print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if diff_pp >= 0 else ''}{diff_pp} pp")
+    print(f"  Diagnostic Accuracy (%)    {base_acc:<7}% [{base_ci[0]}-{base_ci[1]}]  {tuned_acc:<7}% [{tuned_ci[0]}-{tuned_ci[1]}]  {'+' if diff_pp >= 0 else ''}{diff_pp} pp")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
+    print("=" * 70)
+    print(f"  📊 Paired Error Transitions: Wrong➔Correct: {transitions['wrong_to_correct']} | Correct➔Correct: {transitions['correct_to_correct']} | Correct➔Wrong: {transitions['correct_to_wrong']} | Wrong➔Wrong: {transitions['wrong_to_wrong']}")
+    print(f"  💾 Results automatically saved to: results/qlora_7b_evaluation.json and results/error_analysis.json")
     print("=" * 70)
 
 
