@@ -3,7 +3,7 @@ Clinical AI Assistant - Interactive Streamlit Web UI.
 Production 7B Decision Support Engine.
 Features:
 1. USMLE Clinical Reasoning & Diagnostic Vignette Presets.
-2. Hardware-Aware Loading (CUDA 4-Bit NF4 vs. Mac MPS / CPU).
+2. Transparent Adapter Detection (shows whether LoRA weights are loaded or base model is active).
 3. Side-by-Side Comparison: Base 7B Model vs. Fine-Tuned QLoRA 7B Model.
 4. Strict Diagnostic Option Parsing & Real-Time Inference Telemetry.
 """
@@ -18,6 +18,7 @@ from data_utils import extract_predicted_option
 
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_DIR = "./final_qlora_7b_adapter"
+ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_DIR, "adapter_model.safetensors")
 
 st.set_page_config(
     page_title="Clinical AI - 7B QLoRA Diagnostic Assistant",
@@ -58,23 +59,26 @@ def load_clinical_model():
             device_map="auto"
         )
     else:
-        # On Apple Silicon / CPU, load with float16 to preserve RAM
         base_model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True
         ).to(device)
 
-    # Attach QLoRA Adapter
-    if os.path.exists(os.path.join(ADAPTER_DIR, "adapter_config.json")):
+    # Transparent Adapter Detection
+    has_adapter = os.path.exists(ADAPTER_WEIGHTS_FILE) and os.path.getsize(ADAPTER_WEIGHTS_FILE) > 1000
+    if has_adapter:
         try:
             model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)
+            adapter_loaded = True
         except Exception:
             model = base_model
+            adapter_loaded = False
     else:
         model = base_model
+        adapter_loaded = False
 
-    return tokenizer, model, device, is_cuda
+    return tokenizer, model, device, is_cuda, adapter_loaded
 
 
 def generate_clinical_response(model, tokenizer, prompt, device, is_base_mode=False):
@@ -120,10 +124,21 @@ def generate_clinical_response(model, tokenizer, prompt, device, is_base_mode=Fa
 st.markdown("<div class='main-header'>🩺 Clinical Decision Support AI (7B QLoRA)</div>", unsafe_allow_html=True)
 st.markdown("<div class='sub-header'>Domain-Specific Fine-Tuned LLM (Qwen2.5-7B-Instruct + 4-Bit NF4 QLoRA on USMLE Reasoning Cases)</div>", unsafe_allow_html=True)
 
-tokenizer, model, device, is_cuda = load_clinical_model()
+tokenizer, model, device, is_cuda, adapter_loaded = load_clinical_model()
 
-if not is_cuda:
-    st.info("💡 **Hardware Notice:** Running on Apple Silicon (MPS / CPU). For accelerated 4-bit NF4 GPU training and inference, execute via Google Colab on a Tesla T4 GPU.")
+# Transparent Status Bar
+status_col1, status_col2 = st.columns(2)
+with status_col1:
+    if is_cuda:
+        st.success("⚡ **Compute:** NVIDIA CUDA GPU (4-Bit NF4 Quantization Active)")
+    else:
+        st.info("🍎 **Compute:** Local Apple Silicon (FP16 Mode). For 4-bit GPU acceleration, run on Google Colab.")
+
+with status_col2:
+    if adapter_loaded:
+        st.success("🟢 **Model Status:** Fine-Tuned QLoRA Clinical Adapter Loaded (`final_qlora_7b_adapter/`)")
+    else:
+        st.warning("🟡 **Model Status:** Base 7B Model Active (Trained adapter weights will appear here once downloaded from Colab training run).")
 
 # Sidebar: Quick Clinical Presets
 with st.sidebar:
@@ -169,7 +184,7 @@ if st.button("🚀 Run 7B Clinical Diagnostic Inference", type="primary"):
 
         with col2:
             st.subheader("🩺 Fine-Tuned 7B QLoRA Clinical Model")
-            with st.spinner("Generating fine-tuned QLoRA response..."):
+            with st.spinner("Generating fine-tuned response..."):
                 tuned_text, tuned_opt, tuned_lat, tuned_tps, tuned_n = generate_clinical_response(model, tokenizer, user_query, device=device, is_base_mode=False)
             st.success(tuned_text)
             if tuned_opt != "NONE":
