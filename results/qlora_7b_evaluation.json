@@ -1,21 +1,22 @@
 {
   "model_evaluated": "Qwen/Qwen2.5-7B-Instruct",
   "adapter_path": "./final_qlora_7b_adapter",
-  "eval_dataset": "test.jsonl (1,000 strictly held-out cases)",
+  "eval_dataset": "test.jsonl (1000 cases)",
   "quantization": "BitsAndBytes 4-bit NF4",
-  "hardware": "NVIDIA Tesla T4 GPU",
   "primary_metric": "Strict Diagnostic Option Match Accuracy (%)",
-  "parser_methodology": "Bounded regular expression matching leading option delimiters (A:, (B), C., Option D), rejecting incidental article occurrences (e.g. 'A 68-year-old')",
-  "tokenization_policy": "Strictly synchronized with training formatting (max_length=512, prompt truncation protection)",
-  "base_contamination_protection": "with model.disable_adapter(): context manager",
-  "metrics": {
-    "base_7b_diagnostic_accuracy_pct": 28.5,
-    "qlora_7b_diagnostic_accuracy_pct": 62.0,
-    "accuracy_gain_percentage_points_pp": 33.5,
-    "accuracy_relative_gain_pct": 117.54,
-    "base_7b_completion_ppl": 4.12,
-    "qlora_7b_completion_ppl": 1.48,
-    "peak_training_vram_gb": 7.82,
-    "vram_measurement_method": "torch.cuda.max_memory_allocated() after torch.cuda.reset_peak_memory_stats()"
-  }
+  "base_7b_accuracy_pct": 28.5,
+  "base_7b_95_ci_pct": [
+    25.74,
+    31.39
+  ],
+  "qlora_7b_accuracy_pct": 62.0,
+  "qlora_7b_95_ci_pct": [
+    58.94,
+    64.98
+  ],
+  "accuracy_gain_percentage_points_pp": 33.5,
+  "base_7b_completion_ppl": 4.12,
+  "qlora_7b_completion_ppl": 1.48,
+  "base_contamination_safeguard": "with model.disable_adapter(): context manager",
+  "tokenization_policy": "Shared data_utils.py formatting (max_length=512)"
 }

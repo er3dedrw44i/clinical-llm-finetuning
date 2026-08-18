@@ -80,12 +80,11 @@ def run_qlora_training():
             use_gradient_checkpointing=True
         )
     else:
-        print("🍎 [Local Development Mode]: BitsAndBytes CUDA kernels require NVIDIA GPU. Loading fallback on Mac MPS.")
-        fallback_name = "Qwen/Qwen2.5-0.5B-Instruct"
-        base_model = AutoModelForCausalLM.from_pretrained(
-            fallback_name,
-            torch_dtype=torch.float32
-        ).to(device)
+        raise RuntimeError(
+            f"❌ CUDA GPU accelerator required for 4-bit NF4 QLoRA training on {MODEL_NAME}.\n"
+            "BitsAndBytes 4-bit quantization kernels require an NVIDIA GPU (e.g. Tesla T4, A100).\n"
+            "Please run this training pipeline on Google Colab using `qlora_colab.ipynb` or on a CUDA-enabled GPU."
+        )
 
     # 4. Inject LoRA Adapters
     print("\n3. Injecting LoRA Adapters (r=16, alpha=32)...")
