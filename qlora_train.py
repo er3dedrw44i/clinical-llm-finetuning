@@ -153,12 +153,14 @@ def run_qlora_training():
     qlora_model = get_peft_model(base_model, peft_config)
     qlora_model.print_trainable_parameters()
 
-    # 6. Load Full Dataset with Completion-Only Masking
-    print("\n4. Loading & Formatting Full Domain Dataset...")
-    data_splits = prepare_data("medical_domain_dataset.jsonl", test_ratio=0.20, seed=42)
-    train_dataset = format_completion_only_tokens(data_splits["train"], tokenizer)
-    eval_dataset = format_completion_only_tokens(data_splits["test"], tokenizer)
-    print(f"  • Train Set: {len(train_dataset)} cases, Test Set: {len(eval_dataset)} cases")
+    # 6. Load Persistent Dataset with Completion-Only Masking
+    print("\n4. Loading & Formatting Persistent train.jsonl Dataset...")
+    from prepare_dataset import load_split
+    train_data = load_split("train.jsonl")
+    eval_data = load_split("test.jsonl")
+    train_dataset = format_completion_only_tokens(train_data, tokenizer)
+    eval_dataset = format_completion_only_tokens(eval_data, tokenizer)
+    print(f"  • Train Set: {len(train_dataset)} cases, Held-Out Test Set: {len(eval_dataset)} cases")
 
     # 7. Collator & Arguments
     data_collator = DataCollatorForSeq2Seq(

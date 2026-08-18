@@ -4,9 +4,7 @@ Evaluates Base Model vs. Fine-Tuned (LoRA) Model strictly on persistent `test.js
 
 Tier 1: Completion-Only Perplexity (PPL) on unseen test completions.
 Tier 2: Multiset Counter Token F1 Score across test responses.
-Tier 3: Two-Mode Clinical Evaluation:
-        Mode A: Real LLM-as-a-Judge (Structured JSON schema: Correctness, Completeness, Safety, Tone 1-5)
-        Mode B: Deterministic Heuristic Clinical Scorer (Keyword & structure rule-based fallback).
+Tier 3: Deterministic Heuristic Clinical Response Scorer (Diagnostic matching, contraindication warnings, and clinical structure).
 """
 
 import os
@@ -164,7 +162,7 @@ def evaluate_with_heuristic_scorer(instruction, reference, candidate):
 # =====================================================================
 # 5. Main Evaluation Execution
 # =====================================================================
-def run_evaluation(num_test_eval=20):
+def run_evaluation(num_test_eval=None):
     print("=" * 70)
     print("      🚀 STEP 6: 3-TIER SCIENTIFIC MODEL EVALUATION HARNESS")
     print("=" * 70)
@@ -172,12 +170,12 @@ def run_evaluation(num_test_eval=20):
     device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🍎 Active Hardware Device: {device}")
 
-    # Load Persistent Held-Out Test Set
+    # Load Persistent Held-Out Test Set (1,000 cases)
     if not os.path.exists(TEST_DATA_PATH):
         raise FileNotFoundError(f"Persistent test set {TEST_DATA_PATH} not found. Run prepare_dataset.py first.")
     
     all_test_samples = load_split(TEST_DATA_PATH)
-    test_samples = all_test_samples[:num_test_eval]
+    test_samples = all_test_samples if num_test_eval is None else all_test_samples[:num_test_eval]
     print(f"  • Loaded strictly held-out test split: {TEST_DATA_PATH}")
     print(f"  • Total test set size: {len(all_test_samples)} cases | Evaluating on: {len(test_samples)} cases.")
 
