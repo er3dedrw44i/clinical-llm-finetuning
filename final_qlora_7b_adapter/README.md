@@ -13,7 +13,7 @@ tags:
 
 # 🩺 Clinical AI 7B QLoRA Adapter (Qwen2.5-7B-Instruct)
 
-This repository contains a 4-bit NormalFloat4 (NF4) Low-Rank Adaptation (QLoRA) adapter fine-tuned on **4,000 USMLE clinical reasoning cases** from the MedQA benchmark.
+This directory contains the PEFT configuration for the 4-bit NormalFloat4 (NF4) Low-Rank Adaptation (QLoRA) adapter fine-tuned on **4,000 USMLE clinical reasoning cases** from the MedQA benchmark.
 
 ## Model Details
 - **Base Model:** `Qwen/Qwen2.5-7B-Instruct`
@@ -24,7 +24,9 @@ This repository contains a 4-bit NormalFloat4 (NF4) Low-Rank Adaptation (QLoRA) 
 - **Training Strategy:** SFT with Strict Completion-Only Loss Masking (`label=-100` on prompt tokens)
 - **Hardware:** NVIDIA Tesla T4 GPU (16GB VRAM, CUDA)
 
-## Evaluation Benchmark (1,000 Held-Out Cases)
-- **Diagnostic Option Match Accuracy:** $62.00\%$ ($+33.50\text{ pp}$ improvement over Base 7B at $28.50\%$)
-- **Completion Perplexity:** $1.48$ (vs. $4.12$ on Base 7B)
-- **Peak Training VRAM:** $7.82\text{ GB}$ (measured via `reset_peak_memory_stats()`)
+## Reproducing Adapter Weights
+To reproduce the trained adapter weights (`adapter_model.safetensors`), execute the canonical training pipeline:
+1. **Google Colab (Recommended):** Run [`qlora_colab.ipynb`](../qlora_colab.ipynb) on a free Tesla T4 GPU.
+2. **Local CUDA GPU:** Run `python3 qlora_train.py` (or `make train`).
+
+The training loop automatically saves the fine-tuned `adapter_model.safetensors` into this directory upon completion.
