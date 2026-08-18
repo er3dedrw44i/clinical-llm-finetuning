@@ -1,0 +1,31 @@
+{
+  "experiment": "Experiment B (Cloud 4-Bit NF4 QLoRA Production Track)",
+  "base_model": "Qwen/Qwen2.5-7B-Instruct",
+  "hardware": "NVIDIA Tesla T4 GPU (16GB VRAM, CUDA)",
+  "quantization": "BitsAndBytes 4-bit NormalFloat4 (NF4) + Double Quantization",
+  "quantized_weight_footprint_gb": 4.5,
+  "theoretical_fp16_footprint_gb": 16.0,
+  "memory_compression_pct": 71.88,
+  "dataset_train": "train.jsonl (4,000 cases)",
+  "dataset_test": "test.jsonl (1,000 cases)",
+  "trainable_parameters": 20185088,
+  "total_parameters": 7635800064,
+  "trainable_percentage": 0.2643,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "optimizer": "paged_adamw_8bit",
+  "gradient_checkpointing": true,
+  "learning_rate": 0.0002,
+  "loss_masking": "Completion-Only (-100 labels)",
+  "batch_size": 4,
+  "gradient_accumulation_steps": 4,
+  "observed_loss_progression": {
+    "step_10": 2.4705,
+    "step_20": 0.1889,
+    "step_30": 0.1928,
+    "step_37": 0.1915
+  },
+  "peak_vram_gb": 7.82,
+  "adapter_directory": "./final_qlora_7b_adapter"
+}

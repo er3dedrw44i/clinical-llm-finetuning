@@ -1,0 +1,21 @@
+{
+  "experiment": "Experiment A (Local Apple Silicon Baseline)",
+  "base_model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "hardware": "Apple Silicon M5 GPU (mps)",
+  "dataset_train": "train.jsonl (4,000 cases)",
+  "dataset_test": "test.jsonl (1,000 cases)",
+  "trainable_parameters": 8798208,
+  "total_parameters": 502830976,
+  "trainable_percentage": 1.7497,
+  "lora_rank": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+  "learning_rate": 0.0002,
+  "loss_masking": "Completion-Only (-100 labels)",
+  "batch_size": 4,
+  "epochs": 2,
+  "train_runtime_seconds": 54.31,
+  "final_train_loss": 0.1596,
+  "adapter_directory": "./final_adapter"
+}

@@ -1,0 +1,40 @@
+{
+  "dataset_source": "medalpaca/medical_meadow_medqa",
+  "total_records": 5000,
+  "train_records": 4000,
+  "test_records": 1000,
+  "split_seed": 42,
+  "deduplication": "SHA-256 context-aware hash",
+  "data_leakage_overlap": 0,
+  "input_word_count": {
+    "mean": 139.3,
+    "median": 135.0,
+    "min": 30,
+    "max": 390
+  },
+  "output_word_count": {
+    "mean": 4.5,
+    "median": 4.0,
+    "min": 2,
+    "max": 35
+  },
+  "unique_vocabulary_tokens": 46236,
+  "total_tokens": 796331,
+  "type_token_ratio_pct": 5.81,
+  "option_distribution": {
+    "Option A": 1000,
+    "Option B": 1064,
+    "Option C": 1003,
+    "Option D": 1028,
+    "Option E": 905
+  },
+  "specialty_distribution": {
+    "Gastroenterology & Surgery": 3483,
+    "Cardiology": 1567,
+    "Endocrinology & Renal": 1392,
+    "Pulmonology": 1354,
+    "Infectious Disease": 1196,
+    "Pharmacology & Tox": 1131,
+    "General Clinical Medicine": 458
+  }
+}

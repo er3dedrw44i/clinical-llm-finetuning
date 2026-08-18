@@ -1,0 +1,17 @@
+{
+  "hardware": "Apple Silicon M5 MacBook Air (16GB Unified Memory)",
+  "accelerator": "Metal Performance Shaders (mps)",
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "first_token_generation_latency_ms": {
+    "base_model": 38.87,
+    "lora_adapter": 40.40,
+    "overhead_pct": 3.94
+  },
+  "generation_throughput_tok_per_sec": 35.41,
+  "inter_token_latency_ms": 28.24,
+  "weight_fusion": {
+    "method": "merge_and_unload()",
+    "exported_model_size_mb": 1895.51,
+    "adapter_composition_overhead_removed": true
+  }
+}
