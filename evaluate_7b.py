@@ -1,10 +1,11 @@
 """
 Step 6B: Production 7B Model Evaluation Engine (CUDA / Cloud).
 Evaluates Base Qwen2.5-7B-Instruct vs. Fine-Tuned QLoRA 7B strictly on `test.jsonl` (1,000 cases).
-Prioritizes Diagnostic Option Match Accuracy (%) as the primary task metric.
+Prioritizes Diagnostic Option Match Accuracy (%) using strict regex parsing.
 """
 
 import os
+import re
 import json
 import math
 from collections import Counter
@@ -17,6 +18,33 @@ from prepare_dataset import load_split
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 ADAPTER_PATH = "./final_qlora_7b_adapter"
 TEST_DATA_PATH = "test.jsonl"
+
+
+def extract_predicted_option(text: str) -> str:
+    """
+    Strictly extracts option letter (A, B, C, D, E) from model generation.
+    Rejects accidental substring occurrences (e.g., 'b' in 'Staphylococcus').
+    """
+    if not text:
+        return "NONE"
+    clean_text = text.strip()
+    
+    # Pattern 1: Leading option letter (e.g. 'A: ...', 'B. ...', '(C)', 'D - ...')
+    m1 = re.match(r'^\s*\(?([A-Ea-e])\)?(?:\s*[:\.\)\-]|\s+|$)', clean_text)
+    if m1:
+        return m1.group(1).upper()
+
+    # Pattern 2: Explicit answer phrasing (e.g. 'The correct answer is B', 'Option C')
+    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)])', clean_text, re.IGNORECASE)
+    if m2:
+        return m2.group(1).upper()
+
+    # Pattern 3: Standalone first token is a valid option letter
+    first_tok = clean_text.split()[0].upper().rstrip('.:,)') if clean_text.split() else ""
+    if first_tok in ["A", "B", "C", "D", "E"]:
+        return first_tok
+
+    return "NONE"
 
 
 def get_bnb_4bit_config():
@@ -95,16 +123,18 @@ def generate_response(model, tokenizer, instruction, input_text, device):
     return tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
 
 
-def run_7b_evaluation(num_test_eval=50):
+def run_7b_evaluation(num_test_eval=None):
     print("=" * 70)
-    print("      🚀 STEP 6B: 7B BASE VS. QLORA EVALUATION ON HELD-OUT TEST CASES")
+    print("      🚀 STEP 6B: 7B BASE VS. QLORA EVALUATION ON HELD-OUT TEST SET")
     print("=" * 70)
 
     device = "cuda" if torch.cuda.is_available() else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
     print(f"🖥️ Active Hardware: {device.upper()}")
 
-    test_samples = load_split(TEST_DATA_PATH)[:num_test_eval]
-    print(f"  • Evaluating on {len(test_samples)} held-out cases from {TEST_DATA_PATH}...")
+    all_test_samples = load_split(TEST_DATA_PATH)
+    test_samples = all_test_samples if num_test_eval is None else all_test_samples[:num_test_eval]
+    print(f"  • Loaded strictly held-out test split: {TEST_DATA_PATH}")
+    print(f"  • Total test set size: {len(all_test_samples)} cases | Evaluating on: {len(test_samples)} cases.")
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="right")
     if tokenizer.pad_token is None:
@@ -124,8 +154,8 @@ def run_7b_evaluation(num_test_eval=50):
     # Attach QLoRA Adapter if available
     tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
 
-    # 1. Primary Metric: Diagnostic Option Match Accuracy
-    print("\n--- 🎯 PRIMARY METRIC: DIAGNOSTIC OPTION MATCH ACCURACY (%) ---")
+    # 1. Primary Metric: Strict Diagnostic Option Match Accuracy
+    print("\n--- 🎯 PRIMARY METRIC: STRICT DIAGNOSTIC OPTION MATCH ACCURACY (%) ---")
     base_matches = 0
     tuned_matches = 0
 
@@ -133,16 +163,21 @@ def run_7b_evaluation(num_test_eval=50):
         inst = sample["instruction"]
         inp = sample.get("input", "")
         gold = sample["output"].strip()
-        gold_key = gold.split(":")[0].strip().lower() if ":" in gold else gold[:2].strip().lower()
+        gold_opt = extract_predicted_option(gold)
 
         base_resp = generate_response(base_model, tokenizer, inst, inp, device)
         tuned_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
 
-        b_hit = gold_key in base_resp.lower() or gold.lower() in base_resp.lower()
-        t_hit = gold_key in tuned_resp.lower() or gold.lower() in tuned_resp.lower()
+        base_pred_opt = extract_predicted_option(base_resp)
+        tuned_pred_opt = extract_predicted_option(tuned_resp)
 
-        if b_hit: base_matches += 1
-        if t_hit: tuned_matches += 1
+        if base_pred_opt != "NONE" and base_pred_opt == gold_opt:
+            base_matches += 1
+        if tuned_pred_opt != "NONE" and tuned_pred_opt == gold_opt:
+            tuned_matches += 1
+
+        if idx <= 5 or idx == len(test_samples):
+            print(f"  [Case {idx:04d}] Gold: {gold_opt} | Base Pred: {base_pred_opt:<4} | QLoRA Pred: {tuned_pred_opt:<4}")
 
     base_acc = round((base_matches / len(test_samples)) * 100, 2)
     tuned_acc = round((tuned_matches / len(test_samples)) * 100, 2)
@@ -152,7 +187,7 @@ def run_7b_evaluation(num_test_eval=50):
     base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
     tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
 
-    # Report
+    # Dynamic Benchmark Report
     print("\n" + "=" * 70)
     print("                     7B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
@@ -160,6 +195,14 @@ def run_7b_evaluation(num_test_eval=50):
     print(f"  -----------------------------------------------------------------------")
     print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if tuned_acc >= base_acc else '-'}{abs(tuned_acc - base_acc):.2f}%")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
+    print("=" * 70)
+
+    if tuned_acc > base_acc or (tuned_acc == base_acc and tuned_ppl < base_ppl):
+        print("🏆 BENCHMARK RESULT: Fine-Tuned QLoRA 7B Model demonstrated higher empirical diagnostic performance.")
+    elif base_acc > tuned_acc:
+        print("🏆 BENCHMARK RESULT: Base 7B Model baseline outperformed fine-tuned model.")
+    else:
+        print("⚖️ BENCHMARK RESULT: Base 7B and QLoRA 7B demonstrated identical diagnostic accuracy.")
     print("=" * 70)
 
 
