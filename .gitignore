@@ -7,6 +7,7 @@ final_adapter/tokenizer.json
 *.bin
 *.pt
 *.pth
+!final_qlora_7b_adapter/adapter_model.safetensors
 
 # Python & Environment
 __pycache__/
