@@ -1,140 +1,108 @@
 """
-Step 7: Inference Latency & Throughput Benchmarking Engine.
+Step 7: Production 7B Latency & Throughput Benchmark Engine.
 Measures:
-1. Time-to-First-Token (TTFT in milliseconds).
-2. Generation Throughput (tokens per second).
-3. Inter-Token Latency (ITL in ms per token).
-4. Base Model vs. Fine-Tuned (LoRA) Comparative Performance.
+1. First-Token Generation Latency (ms)
+2. Generation Throughput (tokens/second)
+3. Inter-Token Latency (ITL)
+4. Peak VRAM Footprint
 """
 
 import time
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
+import os
 
-MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-ADAPTER_PATH = "./final_adapter"
-BENCHMARK_PROMPT = "Explain the clinical management of acute calculous cholecystitis."
-
-
-def measure_inference_latency(model, tokenizer, prompt, device, max_new_tokens=64, num_trials=3):
-    """
-    Benchmarks TTFT, Throughput (tokens/sec), and ITL across multiple trials.
-    Includes 2 warm-up passes to eliminate GPU compilation overhead.
-    """
-    model.eval()
-    formatted = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
-    inputs = tokenizer(formatted, return_tensors="pt").to(device)
-    input_length = inputs.input_ids.shape[1]
-
-    # 1. Warm-up passes
-    for _ in range(2):
-        with torch.no_grad():
-            _ = model.generate(**inputs, max_new_tokens=8, do_sample=False, pad_token_id=tokenizer.eos_token_id)
-
-    ttft_trials = []
-    throughput_trials = []
-    total_time_trials = []
-    token_counts = []
-
-    # 2. Benchmark Trials
-    for _ in range(num_trials):
-        # A. Measure TTFT (First Token)
-        start_ttft = time.perf_counter()
-        with torch.no_grad():
-            first_out = model.generate(
-                **inputs,
-                max_new_tokens=1,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        ttft_ms = (time.perf_counter() - start_ttft) * 1000.0
-        ttft_trials.append(ttft_ms)
-
-        # B. Measure Full Generation
-        start_full = time.perf_counter()
-        with torch.no_grad():
-            full_out = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        duration = time.perf_counter() - start_full
-        
-        num_generated = full_out.shape[1] - input_length
-        token_counts.append(num_generated)
-        total_time_trials.append(duration)
-
-        if duration > 0 and num_generated > 0:
-            tok_per_sec = num_generated / duration
-            throughput_trials.append(tok_per_sec)
-
-    avg_ttft = sum(ttft_trials) / len(ttft_trials)
-    avg_throughput = sum(throughput_trials) / len(throughput_trials) if throughput_trials else 0.0
-    avg_duration = sum(total_time_trials) / len(total_time_trials)
-    avg_tokens = sum(token_counts) / len(token_counts)
-    avg_itl = (1000.0 / avg_throughput) if avg_throughput > 0 else 0.0
-
-    return {
-        "ttft_ms": round(avg_ttft, 2),
-        "throughput_tok_sec": round(avg_throughput, 2),
-        "itl_ms_per_token": round(avg_itl, 2),
-        "duration_sec": round(avg_duration, 3),
-        "tokens_generated": round(avg_tokens, 1)
-    }
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+ADAPTER_PATH = "./final_qlora_7b_adapter"
 
 
-def run_benchmark():
-    print("=" * 70)
-    print("      🚀 STEP 7: INFERENCE LATENCY & THROUGHPUT BENCHMARK")
-    print("=" * 70)
+def benchmark_7b_inference(num_warmup=2, num_runs=5):
+    is_cuda = torch.cuda.is_available()
+    device = "cuda" if is_cuda else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
+    print(f"🖥️ Hardware Accelerator: {device.upper()}")
 
-    # 1. Detect Device
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    elif torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
-    print(f"🍎 Active Hardware Accelerator: {device}")
-
-    # 2. Load Tokenizer & Base Model
-    print("\n1. Loading Base Foundation Model...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="right")
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    compute_dtype = torch.bfloat16 if (is_cuda and torch.cuda.is_bf16_supported()) else torch.float16
+
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=compute_dtype,
+        bnb_4bit_use_double_quant=True
+    ) if is_cuda else None
+
+    print(f"📥 Loading {MODEL_NAME} in 4-bit NF4...")
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.float32
-    ).to(device)
+        quantization_config=bnb_config,
+        torch_dtype=compute_dtype if is_cuda else torch.float32,
+        device_map="auto" if is_cuda else None
+    )
+    if not is_cuda:
+        base_model = base_model.to(device)
 
-    # 3. Load Fine-Tuned (LoRA) Model
-    print("2. Loading Fine-Tuned (LoRA) Model...")
-    tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
+    tuned_model.eval()
 
-    # 4. Run Benchmarks
-    print("\n3. ⚡ Benchmarking Base Model (3 trials + warmups)...")
-    base_metrics = measure_inference_latency(base_model, tokenizer, BENCHMARK_PROMPT, device)
+    prompt = (
+        "<|im_start|>system\n"
+        "You are an expert Clinical Medicine AI assistant. Provide accurate, evidence-based guidance.<|im_end|>\n"
+        "<|im_start|>user\nA 68-year-old male presents with fever, rust-colored sputum, and dyspnea. What is the diagnosis?<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    inputs = tokenizer(prompt, return_tensors="pt").to(device)
 
-    print("4. ⚡ Benchmarking Fine-Tuned (LoRA) Model (3 trials + warmups)...")
-    tuned_metrics = measure_inference_latency(tuned_model, tokenizer, BENCHMARK_PROMPT, device)
+    # Warmup
+    print("⚡ Warming up GPU kernels...")
+    for _ in range(num_warmup):
+        with torch.no_grad():
+            _ = tuned_model.generate(**inputs, max_new_tokens=10, do_sample=False)
+        if is_cuda: torch.cuda.synchronize()
 
-    # 5. Display Benchmark Report
-    print("\n" + "=" * 70)
-    print("                LATENCY & THROUGHPUT BENCHMARK REPORT")
+    # Benchmark First-Token Generation Latency
+    print(f"⏱️ Measuring First-Token Latency over {num_runs} runs...")
+    latencies = []
+    for _ in range(num_runs):
+        if is_cuda: torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            _ = tuned_model.generate(**inputs, max_new_tokens=1, do_sample=False)
+        if is_cuda: torch.cuda.synchronize()
+        latencies.append((time.perf_counter() - t0) * 1000)
+
+    mean_first_token_ms = round(sum(latencies) / len(latencies), 2)
+
+    # Benchmark Throughput
+    print(f"🚀 Measuring Generation Throughput (64 tokens)...")
+    if is_cuda: torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    with torch.no_grad():
+        out = tuned_model.generate(**inputs, max_new_tokens=64, do_sample=False)
+    if is_cuda: torch.cuda.synchronize()
+    total_time = time.perf_counter() - t0
+    gen_tokens = out.shape[1] - inputs.input_ids.shape[1]
+    throughput_tps = round(gen_tokens / total_time, 2)
+    itl_ms = round((total_time / gen_tokens) * 1000, 2)
+
+    peak_vram = torch.cuda.max_memory_allocated() / 1e9 if is_cuda else 0.0
+
     print("=" * 70)
-    print(f"  Benchmark Metric               Base Model        Fine-Tuned (LoRA)  Overhead")
-    print(f"  -------------------------------------------------------------------------")
-    print(f"  Time-to-First-Token (TTFT)     {base_metrics['ttft_ms']:<6} ms         {tuned_metrics['ttft_ms']:<6} ms         {tuned_metrics['ttft_ms'] - base_metrics['ttft_ms']:+.2f} ms")
-    print(f"  Throughput (Tokens / Sec)      {base_metrics['throughput_tok_sec']:<6} tok/s      {tuned_metrics['throughput_tok_sec']:<6} tok/s      {tuned_metrics['throughput_tok_sec'] - base_metrics['throughput_tok_sec']:+.2f} tok/s")
-    print(f"  Inter-Token Latency (ITL)      {base_metrics['itl_ms_per_token']:<6} ms/tok     {tuned_metrics['itl_ms_per_token']:<6} ms/tok     {tuned_metrics['itl_ms_per_token'] - base_metrics['itl_ms_per_token']:+.2f} ms")
-    print(f"  Total Duration ({base_metrics['tokens_generated']} tokens)      {base_metrics['duration_sec']:<6} s          {tuned_metrics['duration_sec']:<6} s          {tuned_metrics['duration_sec'] - base_metrics['duration_sec']:+.3f} s")
+    print("                     7B INFERENCE BENCHMARK REPORT")
     print("=" * 70)
-    print(f"✅ Benchmark Complete on Apple Silicon ({device})!")
+    print(f"  • Model:                        {MODEL_NAME}")
+    print(f"  • Quantization:                 4-Bit NormalFloat4 (NF4)")
+    print(f"  • Hardware:                     {device.upper()}")
+    print(f"  • First-Token Latency:          {mean_first_token_ms} ms")
+    print(f"  • Generation Throughput:        {throughput_tps} tokens/second")
+    print(f"  • Inter-Token Latency (ITL):    {itl_ms} ms/token")
+    if is_cuda:
+        print(f"  • Peak Inference VRAM:          {peak_vram:.2f} GB")
     print("=" * 70)
 
 
 if __name__ == "__main__":
-    run_benchmark()
+    benchmark_7b_inference()

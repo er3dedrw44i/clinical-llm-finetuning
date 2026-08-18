@@ -1,16 +1,16 @@
-.PHONY: help install test audit train-0.5b train-7b eval-0.5b eval-7b benchmark app
+.PHONY: help install test audit train eval benchmark export app demo
 
 help:
-	@echo "Clinical AI Engineering Pipeline - Commands:"
+	@echo "Clinical AI 7B QLoRA Pipeline - Commands:"
 	@echo "  make install      - Install pinned dependencies"
 	@echo "  make test         - Run automated unit test suite"
 	@echo "  make audit        - Run dataset diversity & token coverage audits"
-	@echo "  make train-0.5b   - Run Experiment A baseline training on Apple Silicon MPS"
-	@echo "  make train-7b     - Run Experiment B 4-bit NF4 QLoRA training on NVIDIA GPU"
-	@echo "  make eval-0.5b    - Evaluate 0.5B model on 1,000 held-out cases"
-	@echo "  make eval-7b      - Evaluate 7B QLoRA model on 1,000 held-out cases"
-	@echo "  make benchmark    - Run inference latency profiling on Apple Silicon"
+	@echo "  make train        - Run 7B 4-bit NF4 QLoRA SFT training loop"
+	@echo "  make eval         - Run 7B evaluation on 1,000 held-out cases"
+	@echo "  make benchmark    - Benchmark 7B inference latency & throughput"
+	@echo "  make export       - Fuse LoRA weights via merge_and_unload()"
 	@echo "  make app          - Launch Streamlit Clinical Decision Support UI"
+	@echo "  make demo         - Run interactive CLI terminal demo"
 
 install:
 	pip install -r requirements.txt
@@ -23,20 +23,20 @@ audit:
 	python3 audit_dataset.py
 	python3 audit_truncation.py
 
-train-0.5b:
-	python3 train.py
-
-train-7b:
+train:
 	python3 qlora_train.py
 
-eval-0.5b:
-	python3 evaluate_model.py
-
-eval-7b:
+eval:
 	python3 evaluate_7b.py
 
 benchmark:
 	python3 benchmark.py
 
+export:
+	python3 export_model.py
+
 app:
 	streamlit run app.py
+
+demo:
+	python3 interactive_demo.py

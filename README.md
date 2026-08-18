@@ -1,5 +1,5 @@
-# 🩺 Domain-Specific Clinical Question-Answering LLM Pipeline
-### Parameter-Efficient Fine-Tuning (4-Bit NF4 QLoRA & LoRA) on USMLE-Style Clinical Reasoning Cases
+# 🩺 Clinical AI: 7B 4-Bit NF4 QLoRA Fine-Tuning & Evaluation Pipeline
+### Parameter-Efficient Fine-Tuning of Qwen2.5-7B on USMLE-Style Clinical Reasoning Cases
 
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-181717?logo=github)](https://github.com/er3dedrw44i/clinical-llm-finetuning)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/er3dedrw44i/clinical-llm-finetuning/blob/main/qlora_colab.ipynb)
@@ -10,16 +10,14 @@
 
 ---
 
-## 📌 Project Overview & Centerpiece Scope
-This repository implements an end-to-end machine learning engineering pipeline for **domain-specific clinical question answering and diagnostic classification**. It fine-tunes open-source foundation models on **5,000 USMLE-style clinical reasoning cases from the MedQA benchmark**.
+## 📌 Project Overview
+This repository implements an end-to-end machine learning engineering pipeline for **domain-specific clinical question answering and diagnostic classification**. It fine-tunes `Qwen2.5-7B-Instruct` on **5,000 USMLE-style clinical reasoning cases from the MedQA benchmark** using **4-bit NormalFloat4 (NF4) QLoRA**.
 
-The project establishes two distinct, reproducible experimental tracks:
-1. **Experiment B (Centerpiece — Cloud 4-Bit NF4 QLoRA Track):** Single-GPU 4-bit quantized fine-tuning of `Qwen2.5-7B-Instruct` using `BitsAndBytes` NormalFloat4 (NF4) quantization + PagedAdamW 8-bit optimizer, reducing theoretical base-weight footprint from $\approx 16\text{ GB} \rightarrow 4.5\text{ GB}$ ($\approx 72\%$ compression) and enabling full training under $8.5\text{ GB}$ peak VRAM on an NVIDIA Tesla T4.
-2. **Experiment A (Local Apple Silicon Baseline Track):** Prototyping, completion-only loss masking, unit test verification, and first-token latency profiling ($38.8\text{ ms}$) on `Qwen2.5-0.5B-Instruct`.
+The pipeline compresses base model weights by $\approx 72\%$ ($\approx 16\text{ GB} \rightarrow 4.5\text{ GB}$), enabling single-GPU training and inference under $8.5\text{ GB}$ peak VRAM on an NVIDIA Tesla T4 GPU.
 
 ---
 
-## 🔬 Centerpiece Results & Statistical Evaluation (1,000 Held-Out Cases)
+## 🔬 Benchmark Results & Statistical Evaluation (1,000 Held-Out Cases)
 
 Evaluated strictly on **1,000 unseen test cases (`test.jsonl`)** with **0% exact-string SHA-256 data leakage** and zero base model adapter contamination (`with model.disable_adapter():`):
 
@@ -27,11 +25,11 @@ Evaluated strictly on **1,000 unseen test cases (`test.jsonl`)** with **0% exact
 ========================================================================================
                      7B BENCHMARK EVALUATION & STATISTICAL REPORT
 ========================================================================================
-  Metric                           Base 7B             QLoRA 7B            Difference
+  Metric                           Base Qwen2.5-7B     Fine-Tuned QLoRA 7B  Difference
   --------------------------------------------------------------------------------------
-  Diagnostic Accuracy (%)          28.50% [25.7-31.4]  62.00% [58.9-65.0]  +33.50 pp
-  Completion Perplexity (PPL)      4.12                1.48                -2.64
-  Observed Peak Training VRAM      N/A                 7.82 GB on T4       Fits on free GPU
+  Diagnostic Accuracy (%)          28.50% [25.7-31.4]  62.00% [58.9-65.0]   +33.50 pp
+  Completion Perplexity (PPL)      4.12                1.48                 -2.64
+  Observed Peak Training VRAM      N/A                 7.82 GB on T4        Single GPU
 ========================================================================================
 ```
 
@@ -69,11 +67,11 @@ Curated from `medalpaca/medical_meadow_medqa` (5,000 clean records, 5.4 MB) and 
 ```
   1. [DATASET]           ──► 5,000 USMLE cases split into persistent train.jsonl (4k) & test.jsonl (1k)
   2. [DATA PREPARATION]  ──► SHA-256 deduplication (0% exact leakage), syntax validation, seed (42)
-  3. [MODEL LOADER]      ──► Hardware-aware routing (Apple Metal MPS vs. NVIDIA CUDA 4-bit NF4)
+  3. [MODEL LOADER]      ──► Hardware-aware routing (NVIDIA CUDA 4-bit NF4 vs. Apple Metal MPS)
   4. [PEFT / LoRA]       ──► Low-Rank Adapter injection (r=16, alpha=32, target: attention & MLP projection layers)
   5. [SFT TRAINING]      ──► Completion-only loss masking (-100) with safe prompt truncation (max_len=512)
-  6. [EVALUATION]        ──► Diagnostic Option Match Accuracy (%) & Completion PPL on test.jsonl
-  7. [BENCHMARKING]      ──► First-token latency (38.8ms) and throughput (35.4 tok/s) on Apple Silicon
+  6. [EVALUATION]        ──► Diagnostic Option Match Accuracy (%) & Completion PPL on test.jsonl (1,000 cases)
+  7. [BENCHMARKING]      ──► First-token latency & throughput profiling
   8. [WEIGHT FUSION]     ──► merge_and_unload() standalone weight consolidation + Streamlit Web App
 ```
 
@@ -117,10 +115,13 @@ make test
 # 3. Audit Dataset & Token Length Coverage
 make audit
 
-# 4. Run Centerpiece 7B Evaluation
-make eval-7b
+# 4. Run 7B QLoRA SFT Training Loop (or run in Colab via qlora_colab.ipynb)
+make train
 
-# 5. Launch Streamlit Clinical Decision Support UI
+# 5. Run Full 1,000-Case 7B Evaluation
+make eval
+
+# 6. Launch Streamlit Clinical Decision Support UI
 make app
 ```
 
@@ -128,10 +129,10 @@ make app
 
 ## 📄 Defensible Resume Bullet Points
 
-* **Parameter-Efficient Fine-Tuning:** Fine-tuned open-source LLMs on 4,000 USMLE clinical reasoning cases from MedQA using 4-bit NF4 QLoRA and LoRA adapters ($r=16, \alpha=32$, targeting attention and MLP projection layers), reducing active trainable parameters to $0.26\%$.
+* **Parameter-Efficient Fine-Tuning:** Fine-tuned open-source `Qwen2.5-7B-Instruct` on 4,000 USMLE clinical reasoning cases from MedQA using 4-bit NF4 QLoRA and LoRA adapters ($r=16, \alpha=32$, targeting attention and MLP projection layers), reducing active trainable parameters to $0.26\%$.
 * **Quantization & Memory Optimization:** Applied BitsAndBytes 4-bit NF4 and double quantization to compress 7B base weights from $\approx 16\text{ GB} \rightarrow 4.5\text{ GB}$ ($\approx 72\%$ reduction), enabling single-GPU training under $7.82\text{ GB}$ peak VRAM on NVIDIA Tesla T4.
 * **Completion-Only Loss Masking:** Implemented assistant-only cross-entropy loss masking (`label=-100`) with safe prompt truncation, preventing prompt token memorization and preserving general reasoning capabilities.
-* **Evaluation & Statistical Profiling:** Evaluated base vs. fine-tuned models on a strictly held-out 1,000-case test set, achieving a $+33.5\text{ pp}$ gain in diagnostic classification accuracy ($28.5\% \rightarrow 62.0\%$, $95\%\text{ CI: } [58.9, 65.0]$) and reducing completion perplexity from $4.12 \rightarrow 1.48$; benchmarked local Apple Silicon inference at $38.8\text{ ms}$ first-token generation latency.
+* **Evaluation & Statistical Profiling:** Evaluated base vs. fine-tuned models on a strictly held-out 1,000-case test set, achieving a $+33.5\text{ pp}$ gain in diagnostic classification accuracy ($28.5\% \rightarrow 62.0\%$, $95\%\text{ CI: } [58.9, 65.0]$) and reducing completion perplexity from $4.12 \rightarrow 1.48$.
 
 ---
 
