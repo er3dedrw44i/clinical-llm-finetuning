@@ -2,9 +2,10 @@
 Step 6B: Production 7B Model Evaluation Engine (CUDA / Cloud).
 Evaluates Base Qwen2.5-7B-Instruct vs. Fine-Tuned QLoRA 7B strictly on `test.jsonl` (1,000 cases).
 Features:
-1. Eliminates adapter contamination using `with model.disable_adapter():`.
-2. Strict regex option parsing rejecting false positive article 'A'.
-3. Computes Diagnostic Option Match Accuracy (%) as primary metric.
+1. Exact same safe tokenization and prompt truncation policy as training.
+2. Eliminates adapter contamination using `with model.disable_adapter():`.
+3. Strict regex option parsing rejecting false positive article 'A'.
+4. Primary metric: Diagnostic Option Match Accuracy (%) with difference in percentage points (pp).
 """
 
 import os
@@ -50,15 +51,37 @@ def extract_predicted_option(text: str) -> str:
 
 
 def get_bnb_4bit_config():
+    compute_dtype = (
+        torch.bfloat16
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
     return BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,  # Native FP16 on Tesla T4
+        bnb_4bit_compute_dtype=compute_dtype,
         bnb_4bit_use_double_quant=True
     )
 
 
-def compute_completion_perplexity(model, tokenizer, test_samples, device):
+def format_eval_tokens_safely(prompt_str, output_str, tokenizer, max_length=512):
+    prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
+    output_ids = tokenizer.encode(output_str + "<|im_end|>", add_special_tokens=False)
+
+    # Protect output_ids > max_length edge case
+    if len(output_ids) >= max_length:
+        output_ids = output_ids[:max_length - 1]
+
+    if len(prompt_ids) + len(output_ids) > max_length:
+        max_prompt_len = max(1, max_length - len(output_ids))
+        prompt_ids = prompt_ids[-max_prompt_len:]
+
+    full_ids = prompt_ids + output_ids
+    labels = [-100] * len(prompt_ids) + output_ids
+    return full_ids, labels, len(prompt_ids)
+
+
+def compute_completion_perplexity(model, tokenizer, test_samples, device, max_length=512):
     model.eval()
     losses = []
     
@@ -69,18 +92,15 @@ def compute_completion_perplexity(model, tokenizer, test_samples, device):
             output = sample["output"]
             context_str = f"\nContext: {input_text}" if input_text else ""
 
-            prompt_text = (
+            prompt_str = (
                 "<|im_start|>system\n"
                 "You are an expert Clinical Medicine AI assistant. Provide accurate, evidence-based guidance.<|im_end|>\n"
                 f"<|im_start|>user\n{instruction}{context_str}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
-            full_text = prompt_text + f"{output}<|im_end|>"
+            full_ids, labels, prompt_len = format_eval_tokens_safely(prompt_str, output, tokenizer, max_length=max_length)
 
-            prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
-            full_ids = tokenizer.encode(full_text, add_special_tokens=False)
-
-            if len(full_ids) <= len(prompt_ids):
+            if len(full_ids) <= prompt_len:
                 continue
 
             input_tensor = torch.tensor([full_ids], device=device)
@@ -89,7 +109,7 @@ def compute_completion_perplexity(model, tokenizer, test_samples, device):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = input_tensor[..., 1:].contiguous()
 
-            completion_start = max(0, len(prompt_ids) - 1)
+            completion_start = max(0, prompt_len - 1)
             comp_logits = shift_logits[:, completion_start:, :].view(-1, shift_logits.size(-1))
             comp_labels = shift_labels[:, completion_start:].view(-1)
 
@@ -142,7 +162,6 @@ def run_7b_evaluation(num_test_eval=None):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load 4-Bit Base 7B Model
     bnb_config = get_bnb_4bit_config() if device == "cuda" else None
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
@@ -153,7 +172,6 @@ def run_7b_evaluation(num_test_eval=None):
     if device != "cuda":
         base_model = base_model.to(device)
 
-    # Attach QLoRA Adapter
     tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_PATH) if os.path.exists(ADAPTER_PATH) else base_model
 
     # 1. Primary Metric: Strict Diagnostic Option Match Accuracy
@@ -167,14 +185,12 @@ def run_7b_evaluation(num_test_eval=None):
         gold = sample["output"].strip()
         gold_opt = extract_predicted_option(gold)
 
-        # Evaluate Base Model (with adapter strictly disabled to prevent contamination)
         if hasattr(tuned_model, "disable_adapter"):
             with tuned_model.disable_adapter():
                 base_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
         else:
             base_resp = generate_response(base_model, tokenizer, inst, inp, device)
 
-        # Evaluate Fine-Tuned QLoRA Model
         tuned_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
 
         base_pred_opt = extract_predicted_option(base_resp)
@@ -190,23 +206,24 @@ def run_7b_evaluation(num_test_eval=None):
 
     base_acc = round((base_matches / len(test_samples)) * 100, 2)
     tuned_acc = round((tuned_matches / len(test_samples)) * 100, 2)
+    diff_pp = round(tuned_acc - base_acc, 2)
 
-    # 2. Secondary Metric: Completion Perplexity
+    # 2. Secondary Metric: Completion Perplexity (Exact Training Alignment)
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
     if hasattr(tuned_model, "disable_adapter"):
         with tuned_model.disable_adapter():
-            base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
+            base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
     else:
-        base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device)
-    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
+        base_ppl = compute_completion_perplexity(base_model, tokenizer, test_samples, device, max_length=512)
+    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
 
-    # Report
+    # Report with percentage points (pp)
     print("\n" + "=" * 70)
     print("                     7B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
     print(f"  Metric                     Base 7B           QLoRA 7B           Difference")
     print(f"  -----------------------------------------------------------------------")
-    print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if tuned_acc >= base_acc else '-'}{abs(tuned_acc - base_acc):.2f}%")
+    print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if diff_pp >= 0 else ''}{diff_pp} pp")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
     print("=" * 70)
 

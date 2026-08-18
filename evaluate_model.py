@@ -2,9 +2,10 @@
 Step 6: Production 0.5B Model Evaluation Engine (Apple Silicon MPS / Local).
 Evaluates Base Qwen2.5-0.5B vs. Fine-Tuned (LoRA) Model strictly on `test.jsonl` (1,000 cases).
 Features:
-1. Eliminates adapter contamination using `with model.disable_adapter():`.
-2. Strict regex option parsing rejecting false positive article 'A'.
-3. Computes Diagnostic Option Match Accuracy (%) as primary metric.
+1. Exact same safe tokenization and prompt truncation policy as training.
+2. Eliminates adapter contamination using `with model.disable_adapter():`.
+3. Strict regex option parsing rejecting false positive article 'A'.
+4. Primary metric: Diagnostic Option Match Accuracy (%) with difference in percentage points (pp).
 """
 
 import os
@@ -48,7 +49,23 @@ def extract_predicted_option(text: str) -> str:
     return "NONE"
 
 
-def compute_completion_perplexity(model, tokenizer, test_samples, device):
+def format_eval_tokens_safely(prompt_str, output_str, tokenizer, max_length=512):
+    prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
+    output_ids = tokenizer.encode(output_str + "<|im_end|>", add_special_tokens=False)
+
+    if len(output_ids) >= max_length:
+        output_ids = output_ids[:max_length - 1]
+
+    if len(prompt_ids) + len(output_ids) > max_length:
+        max_prompt_len = max(1, max_length - len(output_ids))
+        prompt_ids = prompt_ids[-max_prompt_len:]
+
+    full_ids = prompt_ids + output_ids
+    labels = [-100] * len(prompt_ids) + output_ids
+    return full_ids, labels, len(prompt_ids)
+
+
+def compute_completion_perplexity(model, tokenizer, test_samples, device, max_length=512):
     model.eval()
     losses = []
     
@@ -59,18 +76,15 @@ def compute_completion_perplexity(model, tokenizer, test_samples, device):
             output = sample["output"]
             context_str = f"\nContext: {input_text}" if input_text else ""
 
-            prompt_text = (
+            prompt_str = (
                 "<|im_start|>system\n"
                 "You are an expert Clinical Medicine AI assistant. Provide accurate, evidence-based guidance.<|im_end|>\n"
                 f"<|im_start|>user\n{instruction}{context_str}<|im_end|>\n"
                 "<|im_start|>assistant\n"
             )
-            full_text = prompt_text + f"{output}<|im_end|>"
+            full_ids, labels, prompt_len = format_eval_tokens_safely(prompt_str, output, tokenizer, max_length=max_length)
 
-            prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
-            full_ids = tokenizer.encode(full_str, add_special_tokens=False)
-
-            if len(full_ids) <= len(prompt_ids):
+            if len(full_ids) <= prompt_len:
                 continue
 
             input_tensor = torch.tensor([full_ids], device=device)
@@ -79,7 +93,7 @@ def compute_completion_perplexity(model, tokenizer, test_samples, device):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = input_tensor[..., 1:].contiguous()
 
-            completion_start = max(0, len(prompt_ids) - 1)
+            completion_start = max(0, prompt_len - 1)
             comp_logits = shift_logits[:, completion_start:, :].view(-1, shift_logits.size(-1))
             comp_labels = shift_labels[:, completion_start:].view(-1)
 
@@ -146,11 +160,9 @@ def run_evaluation(num_test_eval=None):
         gold = sample["output"].strip()
         gold_opt = extract_predicted_option(gold)
 
-        # Evaluate Base Model (with adapter strictly disabled to guarantee zero contamination)
         with tuned_model.disable_adapter():
             base_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
         
-        # Evaluate Fine-Tuned LoRA Model
         tuned_resp = generate_response(tuned_model, tokenizer, inst, inp, device)
 
         base_pred_opt = extract_predicted_option(base_resp)
@@ -166,29 +178,22 @@ def run_evaluation(num_test_eval=None):
 
     base_acc = round((base_matches / len(test_samples)) * 100, 2)
     tuned_acc = round((tuned_matches / len(test_samples)) * 100, 2)
+    diff_pp = round(tuned_acc - base_acc, 2)
 
-    # 2. Secondary Metric: Completion Perplexity
+    # 2. Secondary Metric: Completion Perplexity (Exact Training Alignment)
     print("\n--- 📊 SECONDARY METRIC: COMPLETION PERPLEXITY (PPL) ---")
     with tuned_model.disable_adapter():
-        base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
-    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device)
+        base_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
+    tuned_ppl = compute_completion_perplexity(tuned_model, tokenizer, test_samples, device, max_length=512)
 
-    # Report
+    # Report with percentage points (pp)
     print("\n" + "=" * 70)
     print("                     0.5B BENCHMARK EVALUATION REPORT")
     print("=" * 70)
     print(f"  Metric                     Base 0.5B         Fine-Tuned (LoRA)  Difference")
     print(f"  -----------------------------------------------------------------------")
-    print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if tuned_acc >= base_acc else '-'}{abs(tuned_acc - base_acc):.2f}%")
+    print(f"  Diagnostic Accuracy (%)    {base_acc:<17}% {tuned_acc:<18}% {'+' if diff_pp >= 0 else ''}{diff_pp} pp")
     print(f"  Completion Perplexity      {base_ppl:<17} {tuned_ppl:<18} {'-' if tuned_ppl <= base_ppl else '+'}{abs(base_ppl - tuned_ppl):.2f}")
-    print("=" * 70)
-
-    if tuned_acc > base_acc or (tuned_acc == base_acc and tuned_ppl < base_ppl):
-        print("🏆 BENCHMARK RESULT: Fine-Tuned LoRA Model demonstrated superior empirical performance.")
-    elif base_acc > tuned_acc:
-        print("🏆 BENCHMARK RESULT: Base Model baseline outperformed fine-tuned model.")
-    else:
-        print("⚖️ BENCHMARK RESULT: Base Model and LoRA Model demonstrated identical accuracy.")
     print("=" * 70)
 
 

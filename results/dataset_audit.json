@@ -4,8 +4,10 @@
   "train_records": 4000,
   "test_records": 1000,
   "split_seed": 42,
-  "deduplication": "SHA-256 context-aware hash",
-  "data_leakage_overlap": 0,
+  "leakage_audit": {
+    "exact_string_sha256_leakage": 0,
+    "leakage_type_verified": "0% verbatim exact-hash overlap between train and test splits"
+  },
   "input_word_count": {
     "mean": 139.3,
     "median": 135.0,
@@ -28,13 +30,16 @@
     "Option D": 1028,
     "Option E": 905
   },
-  "specialty_distribution": {
-    "Gastroenterology & Surgery": 3483,
-    "Cardiology": 1567,
-    "Endocrinology & Renal": 1392,
-    "Pulmonology": 1354,
-    "Infectious Disease": 1196,
-    "Pharmacology & Tox": 1131,
-    "General Clinical Medicine": 458
+  "specialty_distribution_heuristic_multilabel": {
+    "description": "Multi-label keyword matching; cases can encompass multiple specialties (percentages sum to >100%)",
+    "categories": {
+      "Gastroenterology & Surgery": 3483,
+      "Cardiology": 1567,
+      "Endocrinology & Renal": 1392,
+      "Pulmonology": 1354,
+      "Infectious Disease": 1196,
+      "Pharmacology & Tox": 1131,
+      "General Clinical Medicine": 458
+    }
   }
 }
