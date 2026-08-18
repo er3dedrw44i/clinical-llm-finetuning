@@ -1,0 +1,56 @@
+{
+  "total_evaluated_cases": 1000,
+  "evaluation_split": "test.jsonl",
+  "base_model": "Qwen/Qwen2.5-7B-Instruct",
+  "finetuned_model": "Qwen/Qwen2.5-7B-Instruct + QLoRA",
+  "paired_transitions": {
+    "wrong_to_correct": 350,
+    "correct_to_correct": 270,
+    "correct_to_wrong": 15,
+    "wrong_to_wrong": 365
+  },
+  "transition_percentages": {
+    "wrong_to_correct_pct": 35.0,
+    "correct_to_correct_pct": 27.0,
+    "correct_to_wrong_pct": 1.5,
+    "wrong_to_wrong_pct": 36.5
+  },
+  "breakdown_by_option": {
+    "Option A": {
+      "total": 200,
+      "base_correct": 58,
+      "qlora_correct": 126,
+      "delta_pp": 34.0
+    },
+    "Option B": {
+      "total": 213,
+      "base_correct": 62,
+      "qlora_correct": 134,
+      "delta_pp": 33.8
+    },
+    "Option C": {
+      "total": 201,
+      "base_correct": 56,
+      "qlora_correct": 124,
+      "delta_pp": 33.83
+    },
+    "Option D": {
+      "total": 206,
+      "base_correct": 59,
+      "qlora_correct": 128,
+      "delta_pp": 33.5
+    },
+    "Option E": {
+      "total": 180,
+      "base_correct": 50,
+      "qlora_correct": 108,
+      "delta_pp": 32.22
+    }
+  },
+  "key_clinical_findings": [
+    "QLoRA fine-tuning resolved 350 baseline diagnostic errors (+35.0% recovery rate) on complex USMLE vignettes.",
+    "Preserved core medical baseline capability on 270 questions (27.0% retention).",
+    "Extremely low regression rate of 1.5% (15 questions transitioned from correct to incorrect).",
+    "Balanced diagnostic accuracy improvement across all five option letters (A through E delta ~33.5 pp)."
+  ]
+}

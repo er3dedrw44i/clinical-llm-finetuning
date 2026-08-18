@@ -1,10 +1,11 @@
 """
 Clinical AI Assistant - Interactive Streamlit Web UI.
-Production 7B QLoRA Decision Support Engine.
+Production 7B Decision Support Engine.
 Features:
 1. USMLE Clinical Reasoning & Diagnostic Vignette Presets.
-2. Side-by-Side Comparison: Base 7B Model vs. Fine-Tuned QLoRA 7B Model.
-3. Strict Diagnostic Option Parsing & Real-Time Inference Telemetry.
+2. Hardware-Aware Loading (CUDA 4-Bit NF4 vs. Mac MPS / CPU).
+3. Side-by-Side Comparison: Base 7B Model vs. Fine-Tuned QLoRA 7B Model.
+4. Strict Diagnostic Option Parsing & Real-Time Inference Telemetry.
 """
 
 import time
@@ -35,7 +36,7 @@ st.markdown("""
 
 
 @st.cache_resource
-def load_7b_models():
+def load_clinical_model():
     is_cuda = torch.cuda.is_available()
     device = "cuda" if is_cuda else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
     
@@ -43,32 +44,37 @@ def load_7b_models():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    compute_dtype = torch.bfloat16 if (is_cuda and torch.cuda.is_bf16_supported()) else torch.float16
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=compute_dtype,
-        bnb_4bit_use_double_quant=True
-    ) if is_cuda else None
-
-    # Load Base Model
-    base_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        quantization_config=bnb_config,
-        torch_dtype=compute_dtype if is_cuda else torch.float32,
-        device_map="auto" if is_cuda else None
-    )
-    if not is_cuda:
-        base_model = base_model.to(device)
-
-    # Load QLoRA Adapter if available
-    if os.path.exists(ADAPTER_DIR):
-        tuned_model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)
+    if is_cuda:
+        compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=True
+        )
+        base_model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            quantization_config=bnb_config,
+            device_map="auto"
+        )
     else:
-        tuned_model = base_model
+        # On Apple Silicon / CPU, load with float16 to preserve RAM
+        base_model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True
+        ).to(device)
 
-    return tokenizer, base_model, tuned_model, device
+    # Attach QLoRA Adapter
+    if os.path.exists(os.path.join(ADAPTER_DIR, "adapter_config.json")):
+        try:
+            model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)
+        except Exception:
+            model = base_model
+    else:
+        model = base_model
+
+    return tokenizer, model, device, is_cuda
 
 
 def generate_clinical_response(model, tokenizer, prompt, device, is_base_mode=False):
@@ -114,7 +120,10 @@ def generate_clinical_response(model, tokenizer, prompt, device, is_base_mode=Fa
 st.markdown("<div class='main-header'>🩺 Clinical Decision Support AI (7B QLoRA)</div>", unsafe_allow_html=True)
 st.markdown("<div class='sub-header'>Domain-Specific Fine-Tuned LLM (Qwen2.5-7B-Instruct + 4-Bit NF4 QLoRA on USMLE Reasoning Cases)</div>", unsafe_allow_html=True)
 
-tokenizer, base_model, tuned_model, device = load_7b_models()
+tokenizer, model, device, is_cuda = load_clinical_model()
+
+if not is_cuda:
+    st.info("💡 **Hardware Notice:** Running on Apple Silicon (MPS / CPU). For accelerated 4-bit NF4 GPU training and inference, execute via Google Colab on a Tesla T4 GPU.")
 
 # Sidebar: Quick Clinical Presets
 with st.sidebar:
@@ -152,7 +161,7 @@ if st.button("🚀 Run 7B Clinical Diagnostic Inference", type="primary"):
         with col1:
             st.subheader("🤖 Base Qwen2.5-7B Foundation")
             with st.spinner("Generating base 7B response..."):
-                base_text, base_opt, base_lat, base_tps, base_n = generate_clinical_response(tuned_model, tokenizer, user_query, device=device, is_base_mode=True)
+                base_text, base_opt, base_lat, base_tps, base_n = generate_clinical_response(model, tokenizer, user_query, device=device, is_base_mode=True)
             st.write(base_text)
             if base_opt != "NONE":
                 st.info(f"🎯 Parsed Option: **Option {base_opt}**")
@@ -161,7 +170,7 @@ if st.button("🚀 Run 7B Clinical Diagnostic Inference", type="primary"):
         with col2:
             st.subheader("🩺 Fine-Tuned 7B QLoRA Clinical Model")
             with st.spinner("Generating fine-tuned QLoRA response..."):
-                tuned_text, tuned_opt, tuned_lat, tuned_tps, tuned_n = generate_clinical_response(tuned_model, tokenizer, user_query, device=device, is_base_mode=False)
+                tuned_text, tuned_opt, tuned_lat, tuned_tps, tuned_n = generate_clinical_response(model, tokenizer, user_query, device=device, is_base_mode=False)
             st.success(tuned_text)
             if tuned_opt != "NONE":
                 st.success(f"🎯 Parsed Option: **Option {tuned_opt}**")
