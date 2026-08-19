@@ -16,7 +16,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 from data_utils import extract_predicted_option
 
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # Production 7B Foundation Model
 ADAPTER_DIR = "./final_qlora_7b_adapter"
 ADAPTER_WEIGHTS_FILE = os.path.join(ADAPTER_DIR, "adapter_model.safetensors")
 
