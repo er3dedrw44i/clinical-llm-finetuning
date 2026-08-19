@@ -74,12 +74,17 @@ def run_qlora_training():
 
     # 3. Load 4-bit Quantized Base Model
     print(f"2. Loading Quantized Model: {MODEL_NAME}...")
+    import gc
+    gc.collect()
+    if is_cuda:
+        torch.cuda.empty_cache()
+
     bnb_config = get_bnb_4bit_config()
     print(f"⚡ Applying BitsAndBytes 4-bit NF4 Quantization (Compute Dtype: {bnb_config.bnb_4bit_compute_dtype})...")
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=bnb_config,
-        device_map="auto"
+        device_map={"": 0} if is_cuda else None
     )
     base_model = prepare_model_for_kbit_training(
         base_model,
