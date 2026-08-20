@@ -31,6 +31,7 @@ def load_split(file_path: str) -> List[Dict[str, Any]]:
 def extract_predicted_option(text: str) -> str:
     """
     Strictly extracts option letter (A, B, C, D, E) from model generation.
+    Supports both direct options (A:, B.) and conversational formulations (Choice B, most likely diagnosis is C).
     Guarantees that phrases like 'A 68-year-old male...' are NOT falsely parsed as option A.
     """
     if not text:
@@ -42,12 +43,17 @@ def extract_predicted_option(text: str) -> str:
     if m1:
         return m1.group(1).upper()
 
-    # Pattern 2: Explicit answer phrasing (Option A, Answer: A, The correct answer is B)
-    m2 = re.search(r'(?:option|answer(?:\s*is)?)\s*[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
+    # Pattern 2: Explicit answer phrasing (Option A, Choice B, Answer: C, The correct answer is D, most likely diagnosis is E)
+    m2 = re.search(r'(?:option|choice|answer|diagnosis|pathogen|most likely(?: diagnosis| pathogen)?)\s*(?:is\s*)?[:\s\-]*\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
     if m2:
         return m2.group(1).upper()
 
-    # Pattern 3: Standalone single-token output
+    # Pattern 3: Concluding statement (Therefore, (B) is..., Thus, answer C)
+    m3 = re.search(r'(?:therefore|thus|hence)\s*,?\s*(?:the\s*)?(?:correct\s*)?(?:option|choice|answer|diagnosis)?\s*(?:is\s*)?\(?([A-Ea-e])\)?(?:\b|[\.\:\)\-])', clean, re.IGNORECASE)
+    if m3:
+        return m3.group(1).upper()
+
+    # Pattern 4: Standalone single-token output
     tokens = clean.split()
     if len(tokens) == 1:
         tok = tokens[0].upper().rstrip('.:,)')
