@@ -29,7 +29,7 @@ The pipeline compresses base model weights by $\approx 72\%$ ($\approx 16\text{ 
   --------------------------------------------------------------------------------------
   Diagnostic Accuracy (%)          28.50% [25.7-31.4]  62.00% [58.9-65.0]   +33.50 pp
   Completion Perplexity (PPL)      4.12                1.48                 -2.64
-  Observed Peak Training VRAM      N/A                 7.82 GB on T4        Single GPU
+  Observed Peak Training VRAM      N/A                 10.40 GB on T4       Single GPU
 ========================================================================================
 ```
 
@@ -97,7 +97,7 @@ bnb_config = BitsAndBytesConfig(
 * **Theoretical Base 7B Model in FP16:** $\approx 16.0\text{ GB}$ theoretical unquantized footprint.
 * **Quantized 7B Model in 4-bit NF4:** $\approx 4.5\text{ GB}$ VRAM ($\approx 72\%$ weight compression).
 * **Trainable Parameters:** $20,185,088$ / $7,635,800,064$ ($0.26\%$ trainable across attention and MLP projection layers: `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`).
-* **Observed Peak Training VRAM:** **`7.82 GB`** on NVIDIA Tesla T4 GPU (measured via `torch.cuda.max_memory_allocated()` after `reset_peak_memory_stats()`).
+* **Observed Peak Training VRAM:** **`10.40 GB`** on NVIDIA Tesla T4 GPU (measured via `torch.cuda.max_memory_allocated()` after `reset_peak_memory_stats()`).
 
 ---
 
